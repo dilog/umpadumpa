@@ -180,7 +180,12 @@ struct ContentView: View {
             }
         }
         .onChange(of: destinationDatabase) { _, name in
-            backupName = "\(name)_backup_20260918_1515"
+            backupName = BackupName.defaultName(database: name, at: Date())
+        }
+        .onChange(of: tableScope) { _, scope in
+            if scope == "choose" {
+                replaceMode = ReplaceMode.importInPlace.rawValue
+            }
         }
     }
 
@@ -409,13 +414,23 @@ struct ContentView: View {
             mockCard {
                 VStack(alignment: .leading, spacing: 10) {
                     cardTitle("mysql / mysqldump", icon: "terminal")
-                    nativePicker(
-                        selection: .constant("/opt/homebrew/bin"),
-                        options: [
-                            (id: "/opt/homebrew/bin", title: "/opt/homebrew/bin"),
-                            (id: "/usr/local/bin", title: "/usr/local/bin")
-                        ]
-                    )
+                    Text("Leave blank to use PATH.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(red: 0.45, green: 0.49, blue: 0.55))
+                    fieldLabel("mysqldump path")
+                    TextField("/opt/homebrew/bin/mysqldump", text: $model.mysqldumpPath)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.extraLarge)
+                        .onChange(of: model.mysqldumpPath) { _, _ in
+                            model.saveClientSettings()
+                        }
+                    fieldLabel("mysql path")
+                    TextField("/opt/homebrew/bin/mysql", text: $model.mysqlPath)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.extraLarge)
+                        .onChange(of: model.mysqlPath) { _, _ in
+                            model.saveClientSettings()
+                        }
                 }
             }
 
@@ -430,7 +445,7 @@ struct ContentView: View {
                 Text(connection.name)
                     .font(.system(size: 28, weight: .bold))
                 Spacer()
-                statusRow(text: connection.detail, ssh: false)
+                statusRow(text: connection.detail, ssh: connection.usesSSH)
             }
             .padding(.top, 12)
 
@@ -505,7 +520,7 @@ struct ContentView: View {
         destinationConnectionId = recipe.destinationConnectionId
         destinationDatabase = recipe.destinationDatabase
         strategy = recipe.strategy
-        backupName = "\(recipe.destinationDatabase)_backup_20260918_1515"
+        backupName = BackupName.defaultName(database: recipe.destinationDatabase, at: Date())
         newDatabaseName = "\(recipe.sourceDatabase)_fresh"
         if recipe.tables.isEmpty {
             tableScope = "all"
@@ -526,7 +541,7 @@ struct ContentView: View {
             }
         strategy = "backup"
         replaceMode = ReplaceMode.importInPlace.rawValue
-        backupName = "\(destinationDatabase)_backup_20260918_1515"
+        backupName = BackupName.defaultName(database: destinationDatabase, at: Date())
         newDatabaseName = "\(sourceDatabase)_fresh"
         tableScope = "all"
         selectedTableNames = []
@@ -607,6 +622,12 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 160)
+
+                if selectedTableNames.isEmpty {
+                    Text("Choose at least one table.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(red: 0.90, green: 0.30, blue: 0.30))
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -658,6 +679,13 @@ struct ContentView: View {
                     icon: "square.and.pencil"
                 )
             }
+
+            if tableScope == "choose" && (strategy == "replace" || strategy == "backup") {
+                fieldLabel("Replace mode")
+                Text("Import in place (subset Pulls do not drop the destination Database)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(red: 0.45, green: 0.49, blue: 0.55))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -700,8 +728,18 @@ struct ContentView: View {
                 confirmLine("Source", summary.sourceLabel, icon: "icloud")
                 confirmLine("Destination", summary.destinationLabel, icon: "internaldrive")
                 confirmLine("Strategy", summary.strategyLabel, icon: "gearshape")
-                confirmLine("Replace mode", summary.replaceModeLabel, icon: "square.and.pencil")
+                if strategy != "create" {
+                    confirmLine("Replace mode", summary.replaceModeLabel, icon: "square.and.pencil")
+                }
                 confirmLine("Tables", summary.tablesLabel, icon: "tablecells")
+                if summary.backupNameLabel.isEmpty == false {
+                    confirmLine("Backup name", summary.backupNameLabel, icon: "archivebox")
+                }
+                if summary.request.tables.isEmpty == false {
+                    Text("Will not drop the destination Database. Only these tables are replaced.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(red: 0.45, green: 0.49, blue: 0.55))
+                }
             }
 
             if strategy == "backup" {
@@ -722,7 +760,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.extraLarge)
-                .disabled(model.isPulling)
+                .disabled(model.isPulling || currentPullRequest() == nil)
             }
         }
         .padding(28)
@@ -740,20 +778,49 @@ struct ContentView: View {
     private func currentPullRequest() -> PullRequest? {
         guard let source = realSelectedConnection,
               let dest = model.connections.first(where: { $0.id.uuidString == destinationConnectionId }),
-              sourceDatabase.isEmpty == false,
-              destinationDatabase.isEmpty == false
+              sourceDatabase.isEmpty == false
         else {
             return nil
+        }
+
+        let destName: String
+        let strategyValue: Strategy
+        if strategy == "create" {
+            destName = newDatabaseName
+            strategyValue = .createNew
+        } else if strategy == "backup" {
+            destName = destinationDatabase
+            strategyValue = .backupThenReplace
+        } else {
+            destName = destinationDatabase
+            strategyValue = .replace
+        }
+
+        if destName.isEmpty {
+            return nil
+        }
+
+        let chosenTables = tablesForSourceDatabase.filter { selectedTableNames.contains($0) }
+        if tableScope == "choose" && chosenTables.isEmpty {
+            return nil
+        }
+
+        let mode: ReplaceMode
+        if tableScope == "choose" {
+            mode = .importInPlace
+        } else {
+            mode = ReplaceMode(rawValue: replaceMode) ?? .importInPlace
         }
 
         return PullRequest(
             sourceConnection: source,
             sourceDatabase: sourceDatabase,
             destinationConnection: dest,
-            destinationDatabase: destinationDatabase,
-            strategy: .replace,
-            replaceMode: ReplaceMode(rawValue: replaceMode) ?? .importInPlace,
-            tables: []
+            destinationDatabase: destName,
+            strategy: strategyValue,
+            replaceMode: mode,
+            tables: tableScope == "choose" ? chosenTables : [],
+            backupName: strategy == "backup" ? backupName : ""
         )
     }
 
@@ -775,6 +842,18 @@ struct ContentView: View {
                 model.refreshHistory()
             } catch PullError.dumpFailed {
                 model.pullError = "Dump failed. Destination was not changed."
+                model.refreshHistory()
+            } catch PullError.tunnelFailed {
+                model.pullError = "SSH tunnel failed. Destination was not changed."
+                model.refreshHistory()
+            } catch PullError.missingClient(.mysqldump) {
+                model.pullError = "mysqldump was not found. Set its path in Settings."
+                model.refreshHistory()
+            } catch PullError.missingClient(.mysql) {
+                model.pullError = "mysql was not found. Set its path in Settings."
+                model.refreshHistory()
+            } catch PullError.nameAlreadyExists {
+                model.pullError = "That name already exists. The destination was not changed."
                 model.refreshHistory()
             } catch PullError.importFailed {
                 model.pullError = "Import failed."
@@ -801,6 +880,29 @@ struct ContentView: View {
                 .textFieldStyle(.roundedBorder)
             SecureField("Password", text: $model.newPassword)
                 .textFieldStyle(.roundedBorder)
+
+            Toggle("SSH tunnel", isOn: $model.newUsesSSH)
+            if model.newUsesSSH {
+                TextField("SSH host", text: $model.newSSHHost)
+                    .textFieldStyle(.roundedBorder)
+                TextField("SSH port", text: $model.newSSHPort)
+                    .textFieldStyle(.roundedBorder)
+                TextField("SSH user", text: $model.newSSHUser)
+                    .textFieldStyle(.roundedBorder)
+                Picker("SSH auth", selection: $model.newSSHAuth) {
+                    Text("Password").tag(SSHAuthMethod.password.rawValue)
+                    Text("Private key").tag(SSHAuthMethod.privateKey.rawValue)
+                }
+                if model.newSSHAuth == SSHAuthMethod.privateKey.rawValue {
+                    TextField("Private key path (.pem)", text: $model.newSSHKeyPath)
+                        .textFieldStyle(.roundedBorder)
+                    SecureField("Key passphrase", text: $model.newSSHPassphrase)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    SecureField("SSH password", text: $model.newSSHPassword)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
 
             HStack {
                 Spacer()

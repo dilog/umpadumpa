@@ -6,6 +6,7 @@ final class AppModel {
     private let disk: DiskStore
     private let secrets: SecretStoring
     private let historyStore: HistoryStoring
+    private let settingsStore: SettingsStoring
     let engine: PullEngine
 
     var connections: [Connection] = []
@@ -25,6 +26,16 @@ final class AppModel {
     var newPort = "3306"
     var newUser = ""
     var newPassword = ""
+    var newUsesSSH = false
+    var newSSHHost = ""
+    var newSSHPort = "22"
+    var newSSHUser = ""
+    var newSSHAuth = SSHAuthMethod.password.rawValue
+    var newSSHKeyPath = ""
+    var newSSHPassword = ""
+    var newSSHPassphrase = ""
+    var mysqldumpPath = ""
+    var mysqlPath = ""
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -37,22 +48,39 @@ final class AppModel {
         secrets = MemorySecretStore()
         #endif
         let historyStore = DiskHistoryStore(disk: disk)
+        let settingsStore = DiskSettingsStore(disk: disk)
         self.disk = disk
         self.secrets = secrets
         self.historyStore = historyStore
+        self.settingsStore = settingsStore
         self.engine = PullEngine(
             secrets: secrets,
             clock: SystemClock(),
             processes: RealProcessRunner(),
-            history: historyStore
+            history: historyStore,
+            tunnels: RealSSHTunnel(secrets: secrets),
+            settings: settingsStore,
+            paths: FilePathChecker()
         )
         self.connections = disk.loadConnections()
         self.history = historyStore.entries
+        let loadedSettings = settingsStore.load()
+        self.mysqldumpPath = loadedSettings.mysqldumpPath
+        self.mysqlPath = loadedSettings.mysqlPath
         if let first = connections.first {
             selectedNav = first.id.uuidString
             sourceDatabase = ""
             destinationConnectionId = connections.first { $0.name.lowercased() == "localhost" }?.id ?? first.id
         }
+    }
+
+    func saveClientSettings() {
+        settingsStore.save(
+            ClientSettings(
+                mysqldumpPath: mysqldumpPath,
+                mysqlPath: mysqlPath
+            )
+        )
     }
 
     func refreshHistory() {
@@ -69,15 +97,27 @@ final class AppModel {
 
     func addConnection() -> Connection {
         let port = Int(newPort) ?? 3306
+        let sshPort = Int(newSSHPort) ?? 22
+        let auth = SSHAuthMethod(rawValue: newSSHAuth) ?? .password
         let connection = Connection(
             id: UUID(),
             name: newName,
             host: newHost,
             port: port,
-            user: newUser
+            user: newUser,
+            usesSSH: newUsesSSH,
+            sshHost: newSSHHost,
+            sshPort: sshPort,
+            sshUser: newSSHUser,
+            sshAuthMethod: auth,
+            sshKeyPath: newSSHKeyPath
         )
         disk.saveConnection(connection)
         secrets.setPassword(newPassword, forConnectionId: connection.id)
+        if newUsesSSH {
+            secrets.setSSHPassword(newSSHPassword, forConnectionId: connection.id)
+            secrets.setSSHPassphrase(newSSHPassphrase, forConnectionId: connection.id)
+        }
         connections = disk.loadConnections()
         selectedNav = connection.id.uuidString
         showNewConnection = false
@@ -86,6 +126,14 @@ final class AppModel {
         newPort = "3306"
         newUser = ""
         newPassword = ""
+        newUsesSSH = false
+        newSSHHost = ""
+        newSSHPort = "22"
+        newSSHUser = ""
+        newSSHAuth = SSHAuthMethod.password.rawValue
+        newSSHKeyPath = ""
+        newSSHPassword = ""
+        newSSHPassphrase = ""
         return connection
     }
 
@@ -143,6 +191,18 @@ final class AppModel {
                 refreshHistory()
             } catch PullError.dumpFailed {
                 pullError = "Dump failed. Destination was not changed."
+                refreshHistory()
+            } catch PullError.tunnelFailed {
+                pullError = "SSH tunnel failed. Destination was not changed."
+                refreshHistory()
+            } catch PullError.missingClient(.mysqldump) {
+                pullError = "mysqldump was not found. Set its path in Settings."
+                refreshHistory()
+            } catch PullError.missingClient(.mysql) {
+                pullError = "mysql was not found. Set its path in Settings."
+                refreshHistory()
+            } catch PullError.nameAlreadyExists {
+                pullError = "That name already exists. The destination was not changed."
                 refreshHistory()
             } catch PullError.importFailed {
                 pullError = "Import failed."

@@ -6,6 +6,8 @@ nonisolated final class PullEngine {
     private let processes: ProcessRunning
     private let history: HistoryStoring
     private let tunnels: SSHTunneling
+    private let settings: SettingsStoring
+    private let paths: PathChecking
     private let lock = NSLock()
 
     private(set) var isRunning = false
@@ -15,13 +17,17 @@ nonisolated final class PullEngine {
         clock: Clock,
         processes: ProcessRunning,
         history: HistoryStoring,
-        tunnels: SSHTunneling
+        tunnels: SSHTunneling,
+        settings: SettingsStoring,
+        paths: PathChecking
     ) {
         self.secrets = secrets
         self.clock = clock
         self.processes = processes
         self.history = history
         self.tunnels = tunnels
+        self.settings = settings
+        self.paths = paths
     }
 
     func confirm(_ request: PullRequest) -> ConfirmSummary {
@@ -37,12 +43,29 @@ nonisolated final class PullEngine {
             ? "All tables"
             : request.tables.joined(separator: ", ")
 
+        let strategyLabel: String
+        if request.strategy == .createNew {
+            strategyLabel = "Create new"
+        } else if request.strategy == .backupThenReplace {
+            strategyLabel = "Backup and replace"
+        } else {
+            strategyLabel = "Replace"
+        }
+
+        if request.strategy == .backupThenReplace && request.backupName.isEmpty {
+            request.backupName = BackupName.defaultName(
+                database: request.destinationDatabase,
+                at: clock.now
+            )
+        }
+
         return ConfirmSummary(
             sourceLabel: "\(request.sourceConnection.name) / \(request.sourceDatabase)",
             destinationLabel: "\(request.destinationConnection.name) / \(request.destinationDatabase)",
-            strategyLabel: "Replace",
+            strategyLabel: strategyLabel,
             replaceModeLabel: replaceModeLabel,
             tablesLabel: tablesLabel,
+            backupNameLabel: request.strategy == .backupThenReplace ? request.backupName : "",
             request: request
         )
     }
@@ -62,17 +85,66 @@ nonisolated final class PullEngine {
             lock.unlock()
         }
 
-        let request = summary.request
+        let request: PullRequest = {
+            var request = summary.request
+            if request.tables.isEmpty == false {
+                request.replaceMode = .importInPlace
+            }
+            if request.strategy == .backupThenReplace && request.backupName.isEmpty {
+                request.backupName = BackupName.defaultName(
+                    database: request.destinationDatabase,
+                    at: clock.now
+                )
+            }
+            return request
+        }()
         let dumpFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("umpadumpa-\(UUID().uuidString).sql")
             .path
 
         do {
+            _ = try executable(for: .mysqldump)
+            _ = try executable(for: .mysql)
+        } catch {
+            let entry = makeHistory(request: request, succeeded: false)
+            history.append(entry)
+            throw error
+        }
+
+        var destReach: OpenTunnel?
+        let reservedName: String?
+        if request.strategy == .createNew {
+            reservedName = request.destinationDatabase
+        } else if request.strategy == .backupThenReplace {
+            reservedName = request.backupName
+        } else {
+            reservedName = nil
+        }
+
+        if let reservedName {
+            destReach = try await reachability(for: request.destinationConnection, historyRequest: request)
+            let names = try await loadDatabaseNames(
+                connection: request.destinationConnection,
+                reach: destReach!,
+                historyRequest: request
+            )
+            if names.contains(reservedName) {
+                throw PullError.nameAlreadyExists
+            }
+        }
+
+        let sourceReach = try await reachability(for: request.sourceConnection, historyRequest: request)
+
+        do {
             try await processes.run(
-                ExternalCommand(
+                try command(
                     tool: .mysqldump,
-                    arguments: mysqlArguments(for: request.sourceConnection, database: request.sourceDatabase, extra: ["--add-drop-table"]),
-                    environment: passwordEnvironment(for: request.sourceConnection.id),
+                    connection: request.sourceConnection,
+                    host: sourceReach.localHost,
+                    port: sourceReach.localPort,
+                    database: request.sourceDatabase,
+                    extra: ["--add-drop-table"],
+                    tables: request.tables,
                     outputPath: dumpFile,
                     inputPath: nil
                 )
@@ -83,30 +155,95 @@ nonisolated final class PullEngine {
             throw PullError.dumpFailed
         }
 
+        if destReach == nil {
+            do {
+                destReach = try await openReachability(for: request.destinationConnection)
+            } catch {
+                let entry = makeHistory(request: request, succeeded: false)
+                history.append(entry)
+                throw PullError.tunnelFailed
+            }
+        }
+
+        let destinationReach = destReach!
+
         do {
-            if request.replaceMode == .dropDatabase {
+            if request.strategy == .backupThenReplace {
                 try await processes.run(
-                    ExternalCommand(
+                    try command(
                         tool: .mysql,
-                        arguments: mysqlArguments(
-                            for: request.destinationConnection,
-                            database: nil,
-                            extra: ["-e", "DROP DATABASE `\(request.destinationDatabase)`"]
-                        ),
-                        environment: passwordEnvironment(for: request.destinationConnection.id),
+                        connection: request.destinationConnection,
+                        host: destinationReach.localHost,
+                        port: destinationReach.localPort,
+                        database: nil,
+                        extra: ["-e", "CREATE DATABASE `\(request.backupName)`"],
+                        outputPath: nil,
+                        inputPath: nil
+                    )
+                )
+                let backupFile = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("umpadumpa-backup-\(UUID().uuidString).sql")
+                    .path
+                try await processes.run(
+                    try command(
+                        tool: .mysqldump,
+                        connection: request.destinationConnection,
+                        host: destinationReach.localHost,
+                        port: destinationReach.localPort,
+                        database: request.destinationDatabase,
+                        extra: ["--add-drop-table"],
+                        outputPath: backupFile,
+                        inputPath: nil
+                    )
+                )
+                try await processes.run(
+                    try command(
+                        tool: .mysql,
+                        connection: request.destinationConnection,
+                        host: destinationReach.localHost,
+                        port: destinationReach.localPort,
+                        database: request.backupName,
+                        extra: [],
+                        outputPath: nil,
+                        inputPath: backupFile
+                    )
+                )
+            }
+
+            if request.strategy == .createNew {
+                try await processes.run(
+                    try command(
+                        tool: .mysql,
+                        connection: request.destinationConnection,
+                        host: destinationReach.localHost,
+                        port: destinationReach.localPort,
+                        database: nil,
+                        extra: ["-e", "CREATE DATABASE `\(request.destinationDatabase)`"],
+                        outputPath: nil,
+                        inputPath: nil
+                    )
+                )
+            } else if request.replaceMode == .dropDatabase && request.tables.isEmpty {
+                try await processes.run(
+                    try command(
+                        tool: .mysql,
+                        connection: request.destinationConnection,
+                        host: destinationReach.localHost,
+                        port: destinationReach.localPort,
+                        database: nil,
+                        extra: ["-e", "DROP DATABASE `\(request.destinationDatabase)`"],
                         outputPath: nil,
                         inputPath: nil
                     )
                 )
                 try await processes.run(
-                    ExternalCommand(
+                    try command(
                         tool: .mysql,
-                        arguments: mysqlArguments(
-                            for: request.destinationConnection,
-                            database: nil,
-                            extra: ["-e", "CREATE DATABASE `\(request.destinationDatabase)`"]
-                        ),
-                        environment: passwordEnvironment(for: request.destinationConnection.id),
+                        connection: request.destinationConnection,
+                        host: destinationReach.localHost,
+                        port: destinationReach.localPort,
+                        database: nil,
+                        extra: ["-e", "CREATE DATABASE `\(request.destinationDatabase)`"],
                         outputPath: nil,
                         inputPath: nil
                     )
@@ -114,10 +251,13 @@ nonisolated final class PullEngine {
             }
 
             try await processes.run(
-                ExternalCommand(
+                try command(
                     tool: .mysql,
-                    arguments: mysqlArguments(for: request.destinationConnection, database: request.destinationDatabase, extra: []),
-                    environment: passwordEnvironment(for: request.destinationConnection.id),
+                    connection: request.destinationConnection,
+                    host: destinationReach.localHost,
+                    port: destinationReach.localPort,
+                    database: request.destinationDatabase,
+                    extra: [],
                     outputPath: nil,
                     inputPath: dumpFile
                 )
@@ -133,12 +273,94 @@ nonisolated final class PullEngine {
         return entry
     }
 
-    private func mysqlArguments(for connection: Connection, database: String?, extra: [String]) -> [String] {
-        extra + [
-            "-h", connection.host,
-            "-P", String(connection.port),
-            "-u", connection.user
-        ] + (database.map { [$0] } ?? [])
+    private func reachability(for connection: Connection, historyRequest: PullRequest) async throws -> OpenTunnel {
+        do {
+            return try await openReachability(for: connection)
+        } catch {
+            let entry = makeHistory(request: historyRequest, succeeded: false)
+            history.append(entry)
+            throw PullError.tunnelFailed
+        }
+    }
+
+    private func openReachability(for connection: Connection) async throws -> OpenTunnel {
+        if connection.usesSSH == false {
+            return OpenTunnel(localHost: connection.host, localPort: connection.port)
+        }
+        if connection.sshHost.isEmpty || connection.sshUser.isEmpty {
+            throw PullError.tunnelFailed
+        }
+        return try await tunnels.openTunnel(for: connection)
+    }
+
+    private func command(
+        tool: ClientTool,
+        connection: Connection,
+        host: String,
+        port: Int,
+        database: String?,
+        extra: [String],
+        tables: [String] = [],
+        outputPath: String?,
+        inputPath: String?
+    ) throws -> ExternalCommand {
+        let executable = try executable(for: tool)
+        return ExternalCommand(
+            tool: tool,
+            executable: executable,
+            arguments: extra + [
+                "-h", host,
+                "-P", String(port),
+                "-u", connection.user
+            ] + (database.map { [$0] } ?? []) + tables,
+            environment: passwordEnvironment(for: connection.id),
+            outputPath: outputPath,
+            inputPath: inputPath
+        )
+    }
+
+    private func loadDatabaseNames(
+        connection: Connection,
+        reach: OpenTunnel,
+        historyRequest: PullRequest
+    ) async throws -> [String] {
+        let listingFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("umpadumpa-databases-\(UUID().uuidString).txt")
+            .path
+        do {
+            try await processes.run(
+                try command(
+                    tool: .mysql,
+                    connection: connection,
+                    host: reach.localHost,
+                    port: reach.localPort,
+                    database: nil,
+                    extra: ["-e", "SHOW DATABASES"],
+                    outputPath: listingFile,
+                    inputPath: nil
+                )
+            )
+        } catch {
+            let entry = makeHistory(request: historyRequest, succeeded: false)
+            history.append(entry)
+            throw PullError.importFailed
+        }
+
+        let listing = (try? String(contentsOfFile: listingFile, encoding: .utf8)) ?? ""
+        return databaseNames(fromListing: listing)
+    }
+
+    private func executable(for tool: ClientTool) throws -> String {
+        let stored = settings.load()
+        let configured = (tool == .mysqldump ? stored.mysqldumpPath : stored.mysqlPath)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if configured.isEmpty {
+            return tool == .mysqldump ? "mysqldump" : "mysql"
+        }
+        if paths.pathExists(configured) == false {
+            throw PullError.missingClient(tool)
+        }
+        return configured
     }
 
     private func passwordEnvironment(for connectionId: UUID) -> [String: String] {
@@ -157,5 +379,20 @@ nonisolated final class PullEngine {
             destination: "\(request.destinationConnection.name) / \(request.destinationDatabase)",
             succeeded: succeeded
         )
+    }
+
+    private func databaseNames(fromListing listing: String) -> [String] {
+        var names: [String] = []
+        for line in listing.split(separator: "\n") {
+            let name = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            if name.isEmpty {
+                continue
+            }
+            if name == "Database" {
+                continue
+            }
+            names.append(name)
+        }
+        return names
     }
 }

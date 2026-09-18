@@ -5,6 +5,8 @@ import Security
 
 nonisolated final class MemorySecretStore: SecretStoring {
     private var passwords: [UUID: String] = [:]
+    private var sshPasswords: [UUID: String] = [:]
+    private var sshPassphrases: [UUID: String] = [:]
 
     func setPassword(_ password: String, forConnectionId id: UUID) {
         passwords[id] = password
@@ -12,6 +14,22 @@ nonisolated final class MemorySecretStore: SecretStoring {
 
     func password(forConnectionId id: UUID) -> String? {
         passwords[id]
+    }
+
+    func setSSHPassword(_ password: String, forConnectionId id: UUID) {
+        sshPasswords[id] = password
+    }
+
+    func sshPassword(forConnectionId id: UUID) -> String? {
+        sshPasswords[id]
+    }
+
+    func setSSHPassphrase(_ passphrase: String, forConnectionId id: UUID) {
+        sshPassphrases[id] = passphrase
+    }
+
+    func sshPassphrase(forConnectionId id: UUID) -> String? {
+        sshPassphrases[id]
     }
 }
 
@@ -31,6 +49,32 @@ nonisolated final class MemoryHistoryStore: HistoryStoring {
     }
 }
 
+nonisolated final class MemorySettingsStore: SettingsStoring {
+    private var settings = ClientSettings.usingPath
+
+    func load() -> ClientSettings {
+        settings
+    }
+
+    func save(_ settings: ClientSettings) {
+        self.settings = settings
+    }
+}
+
+nonisolated final class FakePathChecker: PathChecking {
+    var missing: Set<String> = []
+
+    func pathExists(_ path: String) -> Bool {
+        missing.contains(path) == false
+    }
+}
+
+struct FilePathChecker: PathChecking {
+    func pathExists(_ path: String) -> Bool {
+        FileManager.default.isExecutableFile(atPath: path)
+    }
+}
+
 nonisolated final class DiskStore {
     let folder: URL
 
@@ -40,6 +84,10 @@ nonisolated final class DiskStore {
 
     var historyFile: URL {
         folder.appendingPathComponent("history.json")
+    }
+
+    var settingsFile: URL {
+        folder.appendingPathComponent("settings.json")
     }
 
     init(folder: URL) {
@@ -78,6 +126,19 @@ nonisolated final class DiskStore {
             try? data.write(to: historyFile)
         }
     }
+
+    func loadSettings() -> ClientSettings {
+        guard let data = try? Data(contentsOf: settingsFile) else {
+            return .usingPath
+        }
+        return (try? JSONDecoder().decode(ClientSettings.self, from: data)) ?? .usingPath
+    }
+
+    func saveSettings(_ settings: ClientSettings) {
+        if let data = try? JSONEncoder().encode(settings) {
+            try? data.write(to: settingsFile)
+        }
+    }
 }
 
 nonisolated final class DiskHistoryStore: HistoryStoring {
@@ -95,14 +156,52 @@ nonisolated final class DiskHistoryStore: HistoryStoring {
     }
 }
 
+nonisolated final class DiskSettingsStore: SettingsStoring {
+    private let disk: DiskStore
+
+    init(disk: DiskStore) {
+        self.disk = disk
+    }
+
+    func load() -> ClientSettings {
+        disk.loadSettings()
+    }
+
+    func save(_ settings: ClientSettings) {
+        disk.saveSettings(settings)
+    }
+}
+
 #if os(macOS)
 nonisolated final class KeychainSecretStore: SecretStoring {
     private let service = "dev.umpadumpa.connection"
 
     func setPassword(_ password: String, forConnectionId id: UUID) {
-        let account = id.uuidString
-        let passwordData = Data(password.utf8)
+        setSecret(password, account: id.uuidString)
+    }
 
+    func password(forConnectionId id: UUID) -> String? {
+        secret(account: id.uuidString)
+    }
+
+    func setSSHPassword(_ password: String, forConnectionId id: UUID) {
+        setSecret(password, account: id.uuidString + "-ssh-password")
+    }
+
+    func sshPassword(forConnectionId id: UUID) -> String? {
+        secret(account: id.uuidString + "-ssh-password")
+    }
+
+    func setSSHPassphrase(_ passphrase: String, forConnectionId id: UUID) {
+        setSecret(passphrase, account: id.uuidString + "-ssh-passphrase")
+    }
+
+    func sshPassphrase(forConnectionId id: UUID) -> String? {
+        secret(account: id.uuidString + "-ssh-passphrase")
+    }
+
+    private func setSecret(_ value: String, account: String) {
+        let data = Data(value.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -111,15 +210,15 @@ nonisolated final class KeychainSecretStore: SecretStoring {
         SecItemDelete(query as CFDictionary)
 
         var add = query
-        add[kSecValueData as String] = passwordData
+        add[kSecValueData as String] = data
         SecItemAdd(add as CFDictionary, nil)
     }
 
-    func password(forConnectionId id: UUID) -> String? {
+    private func secret(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: id.uuidString,
+            kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -159,6 +258,7 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
     var failDump = false
     var failImport = false
     var holdDump = false
+    private var firstDumpOutputPath: String?
 
     private var dumpHoldContinuation: CheckedContinuation<Void, Never>?
     private var dumpIsHeldContinuation: CheckedContinuation<Void, Never>?
@@ -182,6 +282,9 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
         invocations.append(command)
 
         if command.tool == .mysqldump {
+            if firstDumpOutputPath == nil {
+                firstDumpOutputPath = command.outputPath
+            }
             if holdDump {
                 dumpIsHeld = true
                 dumpIsHeldContinuation?.resume()
@@ -195,10 +298,16 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
                 throw PullError.dumpFailed
             }
 
-            let database = command.arguments.last ?? ""
-            let tables = tablesByDatabase[database] ?? []
+            let target = dumpTarget(from: command.arguments)
+            let allTables = tablesByDatabase[target.database] ?? []
+            let tables: [String]
+            if target.tables.isEmpty {
+                tables = allTables.sorted()
+            } else {
+                tables = target.tables.filter { allTables.contains($0) }
+            }
             var sql = ""
-            for table in tables.sorted() {
+            for table in tables {
                 sql += "DROP TABLE IF EXISTS \(table);\n"
                 sql += "CREATE TABLE \(table);\n"
             }
@@ -210,24 +319,33 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
         }
 
         if command.tool == .mysql {
-            if failImport {
+            if failImport && command.inputPath != nil && command.inputPath == firstDumpOutputPath {
                 throw PullError.importFailed
             }
 
             if let eIndex = command.arguments.firstIndex(of: "-e"),
                eIndex + 1 < command.arguments.count {
                 let sql = command.arguments[eIndex + 1]
-                let names = Array(tablesByDatabase.keys)
-                for name in names {
-                    if sql.contains(name) == false {
-                        continue
+
+                if sql.contains("SHOW DATABASES") {
+                    if let outputPath = command.outputPath {
+                        var lines = ["Database"]
+                        lines.append(contentsOf: tablesByDatabase.keys.sorted())
+                        try lines.joined(separator: "\n").write(toFile: outputPath, atomically: true, encoding: .utf8)
                     }
+                    return
+                }
+
+                if let name = backtickDatabaseName(in: sql) {
                     if sql.contains("DROP DATABASE") {
                         didSendDropDatabase = true
                         tablesByDatabase[name] = []
                     }
                     if sql.contains("CREATE DATABASE") {
                         didSendCreateDatabase = true
+                        if tablesByDatabase[name] == nil {
+                            tablesByDatabase[name] = []
+                        }
                     }
                 }
                 return
@@ -258,9 +376,177 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
     }
 }
 
+private func backtickDatabaseName(in sql: String) -> String? {
+    guard let start = sql.firstIndex(of: "`") else {
+        return nil
+    }
+    let after = sql.index(after: start)
+    guard let end = sql[after...].firstIndex(of: "`") else {
+        return nil
+    }
+    return String(sql[after..<end])
+}
+
+private func dumpTarget(from arguments: [String]) -> (database: String, tables: [String]) {
+    var index = 0
+    var names: [String] = []
+    let flagsWithValue = ["-h", "-P", "-u", "-e"]
+
+    while index < arguments.count {
+        let argument = arguments[index]
+        if flagsWithValue.contains(argument) {
+            index += 2
+            continue
+        }
+        if argument.hasPrefix("-") {
+            index += 1
+            continue
+        }
+        names.append(argument)
+        index += 1
+    }
+
+    let database = names.first ?? ""
+    let tables = Array(names.dropFirst())
+    return (database, tables)
+}
+
 nonisolated final class RealSSHTunnel: SSHTunneling {
+    private let secrets: SecretStoring
+    private var running: [Process] = []
+
+    init(secrets: SecretStoring) {
+        self.secrets = secrets
+    }
+
     func openTunnel(for connection: Connection) async throws -> OpenTunnel {
+        let localPort = try unusedLocalPort()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+
+        var arguments = [
+            "-N",
+            "-L", "\(localPort):\(connection.host):\(connection.port)",
+            "-p", String(connection.sshPort),
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "BatchMode=no"
+        ]
+
+        if connection.sshAuthMethod == .privateKey {
+            arguments.append(contentsOf: ["-i", connection.sshKeyPath, "-o", "IdentitiesOnly=yes"])
+        }
+
+        arguments.append("\(connection.sshUser)@\(connection.sshHost)")
+        process.arguments = arguments
+
+        var environment = ProcessInfo.processInfo.environment
+        if connection.sshAuthMethod == .password, let password = secrets.sshPassword(forConnectionId: connection.id) {
+            let askPass = try writeAskPassScript(secret: password)
+            environment["SSH_ASKPASS"] = askPass
+            environment["SSH_ASKPASS_REQUIRE"] = "force"
+            environment["DISPLAY"] = environment["DISPLAY"] ?? ":0"
+        } else if connection.sshAuthMethod == .privateKey, let passphrase = secrets.sshPassphrase(forConnectionId: connection.id), passphrase.isEmpty == false {
+            let askPass = try writeAskPassScript(secret: passphrase)
+            environment["SSH_ASKPASS"] = askPass
+            environment["SSH_ASKPASS_REQUIRE"] = "force"
+            environment["DISPLAY"] = environment["DISPLAY"] ?? ":0"
+        }
+        process.environment = environment
+
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        process.standardInput = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            throw PullError.tunnelFailed
+        }
+
+        try await waitUntilPortIsOpen(localPort, process: process)
+        running.append(process)
+        return OpenTunnel(localHost: "127.0.0.1", localPort: localPort)
+    }
+
+    private func unusedLocalPort() throws -> Int {
+        let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard socket >= 0 else {
+            throw PullError.tunnelFailed
+        }
+        defer { Darwin.close(socket) }
+
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_port = 0
+
+        let bindResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.bind(socket, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            throw PullError.tunnelFailed
+        }
+
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.getsockname(socket, sockaddrPointer, &length)
+            }
+        }
+        guard nameResult == 0 else {
+            throw PullError.tunnelFailed
+        }
+        return Int(UInt16(bigEndian: address.sin_port))
+    }
+
+    private func waitUntilPortIsOpen(_ port: Int, process: Process) async throws {
+        for _ in 0..<50 {
+            if process.isRunning == false {
+                throw PullError.tunnelFailed
+            }
+            if canConnect(toPort: port) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        process.terminate()
         throw PullError.tunnelFailed
+    }
+
+    private func canConnect(toPort port: Int) -> Bool {
+        let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard socket >= 0 else {
+            return false
+        }
+        defer { Darwin.close(socket) }
+
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_port = in_port_t(UInt16(port).bigEndian)
+
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.connect(socket, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return result == 0
+    }
+
+    private func writeAskPassScript(secret: String) throws -> String {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("umpadumpa-askpass-\(UUID().uuidString).sh")
+            .path
+        let escaped = secret.replacingOccurrences(of: "'", with: "'\\''")
+        let script = "#!/bin/sh\necho '\(escaped)'\n"
+        try script.write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+        return path
     }
 }
 
@@ -280,12 +566,12 @@ nonisolated final class RealProcessRunner: ProcessRunning {
 
     private func launch(_ command: ExternalCommand) throws {
         let process = Process()
-        if command.tool == .mysqldump {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["mysqldump"] + command.arguments
+        if command.executable.hasPrefix("/") {
+            process.executableURL = URL(fileURLWithPath: command.executable)
+            process.arguments = command.arguments
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["mysql"] + command.arguments
+            process.arguments = [command.executable] + command.arguments
         }
 
         var environment = ProcessInfo.processInfo.environment
