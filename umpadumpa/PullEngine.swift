@@ -169,18 +169,6 @@ nonisolated final class PullEngine {
 
         do {
             if request.strategy == .backupThenReplace {
-                try await processes.run(
-                    try command(
-                        tool: .mysql,
-                        connection: request.destinationConnection,
-                        host: destinationReach.localHost,
-                        port: destinationReach.localPort,
-                        database: nil,
-                        extra: ["-e", "CREATE DATABASE `\(request.backupName)`"],
-                        outputPath: nil,
-                        inputPath: nil
-                    )
-                )
                 let backupFile = FileManager.default.temporaryDirectory
                     .appendingPathComponent("umpadumpa-backup-\(UUID().uuidString).sql")
                     .path
@@ -193,6 +181,18 @@ nonisolated final class PullEngine {
                         database: request.destinationDatabase,
                         extra: ["--add-drop-table"],
                         outputPath: backupFile,
+                        inputPath: nil
+                    )
+                )
+                try await processes.run(
+                    try command(
+                        tool: .mysql,
+                        connection: request.destinationConnection,
+                        host: destinationReach.localHost,
+                        port: destinationReach.localPort,
+                        database: nil,
+                        extra: ["-e", "CREATE DATABASE `\(request.backupName)`"],
+                        outputPath: nil,
                         inputPath: nil
                     )
                 )
