@@ -115,8 +115,11 @@ final class AppModel {
         disk.saveConnection(connection)
         secrets.setPassword(newPassword, forConnectionId: connection.id)
         if newUsesSSH {
-            secrets.setSSHPassword(newSSHPassword, forConnectionId: connection.id)
-            secrets.setSSHPassphrase(newSSHPassphrase, forConnectionId: connection.id)
+            if auth == .password {
+                secrets.setSSHPassword(newSSHPassword, forConnectionId: connection.id)
+            } else {
+                secrets.setSSHPassphrase(newSSHPassphrase, forConnectionId: connection.id)
+            }
         }
         connections = disk.loadConnections()
         selectedNav = connection.id.uuidString

@@ -486,6 +486,21 @@ final class PullTests: XCTestCase {
         XCTAssertTrue(tunnels.openedFor.isEmpty)
     }
 
+    func testSSHPrivateKeyConnectionOpensTunnelWithKeyPath() async throws {
+        var pull = request()
+        pull.sourceConnection.usesSSH = true
+        pull.sourceConnection.sshHost = "bastion.example"
+        pull.sourceConnection.sshUser = "jump"
+        pull.sourceConnection.sshAuthMethod = .privateKey
+        pull.sourceConnection.sshKeyPath = "/Users/me/keys/prod.pem"
+
+        _ = try await engine.run(engine.confirm(pull))
+
+        XCTAssertEqual(tunnels.openedFor.count, 1)
+        XCTAssertEqual(tunnels.openedFor[0].sshAuthMethod, .privateKey)
+        XCTAssertEqual(tunnels.openedFor[0].sshKeyPath, "/Users/me/keys/prod.pem")
+    }
+
     func testEmptySettingsUsePathClientNames() async throws {
         settings.save(.usingPath)
 
