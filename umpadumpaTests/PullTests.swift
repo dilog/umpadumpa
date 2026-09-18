@@ -635,3 +635,136 @@ final class ConnectionStoreTests: XCTestCase {
         XCTAssertEqual(secrets.sshPassphrase(forConnectionId: connection.id), "pem-phrase")
     }
 }
+
+final class RecipeStoreTests: XCTestCase {
+    private let sourceId = UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
+    private let otherSourceId = UUID(uuidString: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC")!
+    private let destId = UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!
+
+    private func dailyRecipe() -> Recipe {
+        Recipe(
+            id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            title: "Welcome daily",
+            sourceConnectionId: sourceId,
+            sourceDatabase: "shop",
+            destinationConnectionId: destId,
+            destinationDatabase: "local_shop",
+            strategy: .backupThenReplace,
+            replaceMode: .importInPlace,
+            tables: []
+        )
+    }
+
+    func testSavedRecipeRoundTripsWithoutBeingChangedByAPull() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let disk = DiskStore(folder: folder)
+
+        let recipe = dailyRecipe()
+        disk.saveRecipe(recipe)
+
+        let secrets = MemorySecretStore()
+        let processes = FakeProcessRunner()
+        processes.tablesByDatabase["shop"] = ["users"]
+        processes.tablesByDatabase["other_shop"] = []
+        secrets.setPassword("src", forConnectionId: sourceId)
+        secrets.setPassword("dst", forConnectionId: destId)
+
+        let source = Connection(id: sourceId, name: "Prod", host: "prod.example", port: 3306, user: "dump")
+        let destination = Connection(id: destId, name: "Localhost", host: "127.0.0.1", port: 3306, user: "root")
+
+        var pull = recipe.pullRequest(source: source, destination: destination)
+        pull.destinationDatabase = "other_shop"
+        pull.strategy = .replace
+        pull.replaceMode = .dropDatabase
+
+        let history = MemoryHistoryStore()
+        let engine = PullEngine(
+            secrets: secrets,
+            clock: FixedClock(now: Date(timeIntervalSince1970: 1_000_000)),
+            processes: processes,
+            history: history,
+            tunnels: FakeSSHTunnel(),
+            settings: MemorySettingsStore(),
+            paths: FakePathChecker()
+        )
+        _ = try await engine.run(engine.confirm(pull))
+
+        let loaded = disk.loadRecipes()
+        XCTAssertEqual(loaded, [recipe])
+        XCTAssertEqual(loaded[0].destinationDatabase, "local_shop")
+        XCTAssertEqual(loaded[0].strategy, .backupThenReplace)
+        XCTAssertEqual(history.entries.count, 1)
+        XCTAssertNil(Mirror(reflecting: history.entries[0]).children.first { $0.label == "request" })
+    }
+
+    func testSaveWritesTheCurrentFormIntoTheRecipe() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let disk = DiskStore(folder: folder)
+
+        var recipe = dailyRecipe()
+        disk.saveRecipe(recipe)
+
+        recipe.destinationDatabase = "welcome_test"
+        recipe.strategy = .replace
+        recipe.replaceMode = .dropDatabase
+        recipe.tables = ["users", "orders"]
+        disk.saveRecipe(recipe)
+
+        let loaded = disk.loadRecipes()
+        XCTAssertEqual(loaded[0].destinationDatabase, "welcome_test")
+        XCTAssertEqual(loaded[0].strategy, .replace)
+        XCTAssertEqual(loaded[0].replaceMode, .dropDatabase)
+        XCTAssertEqual(loaded[0].tables, ["users", "orders"])
+    }
+
+    func testPickerOnlyListsRecipesForTheSidebarSource() {
+        let daily = dailyRecipe()
+        let other = Recipe(
+            id: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
+            title: "Voilà daily",
+            sourceConnectionId: otherSourceId,
+            sourceDatabase: "voila",
+            destinationConnectionId: destId,
+            destinationDatabase: "voila",
+            strategy: .replace,
+            replaceMode: .importInPlace,
+            tables: []
+        )
+
+        let listed = Recipe.forSource(connectionId: sourceId, in: [daily, other])
+        XCTAssertEqual(listed.map(\.title), ["Welcome daily"])
+    }
+
+    func testEmptyTablesMeansEntireDatabaseAndNamedListIsSelectedTables() {
+        let source = Connection(id: sourceId, name: "Prod", host: "prod.example", port: 3306, user: "dump")
+        let destination = Connection(id: destId, name: "Localhost", host: "127.0.0.1", port: 3306, user: "root")
+
+        let whole = dailyRecipe().pullRequest(source: source, destination: destination)
+        XCTAssertEqual(whole.tables, [])
+
+        var subset = dailyRecipe()
+        subset.tables = ["users"]
+        XCTAssertEqual(subset.pullRequest(source: source, destination: destination).tables, ["users"])
+    }
+
+    func testDuplicateKeepsACopyWithSuffixAndDeleteRemovesIt() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let disk = DiskStore(folder: folder)
+
+        let recipe = dailyRecipe()
+        disk.saveRecipe(recipe)
+
+        let copy = recipe.duplicated()
+        XCTAssertEqual(copy.title, "Welcome daily (copy)")
+        XCTAssertNotEqual(copy.id, recipe.id)
+        XCTAssertEqual(copy.sourceDatabase, recipe.sourceDatabase)
+        disk.saveRecipe(copy)
+        XCTAssertEqual(disk.loadRecipes().count, 2)
+
+        disk.deleteRecipe(id: copy.id)
+        XCTAssertEqual(disk.loadRecipes(), [recipe])
+    }
+}

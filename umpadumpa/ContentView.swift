@@ -10,17 +10,6 @@ struct FakeConnection: Identifiable {
     let systemDatabases: [String]
 }
 
-struct FakeRecipe: Identifiable {
-    let id: String
-    let name: String
-    let sourceConnectionId: String
-    let sourceDatabase: String
-    let destinationConnectionId: String
-    let destinationDatabase: String
-    let strategy: String
-    let tables: [String]
-}
-
 struct FakeHistoryRow: Identifiable {
     let id: String
     let when: String
@@ -56,69 +45,6 @@ struct ContentView: View {
         )
     ]
 
-    @State private var recipes: [FakeRecipe] = [
-        FakeRecipe(
-            id: "welcome_daily",
-            name: "Welcome daily",
-            sourceConnectionId: "welcome_prod",
-            sourceDatabase: "welcome_prod",
-            destinationConnectionId: "localhost",
-            destinationDatabase: "welcome",
-            strategy: "backup",
-            tables: []
-        ),
-        FakeRecipe(
-            id: "welcome_demo",
-            name: "Welcome demo",
-            sourceConnectionId: "welcome_prod",
-            sourceDatabase: "welcome_prod",
-            destinationConnectionId: "localhost",
-            destinationDatabase: "welcome_test",
-            strategy: "backup",
-            tables: []
-        ),
-        FakeRecipe(
-            id: "welcome_users",
-            name: "Welcome users only",
-            sourceConnectionId: "welcome_prod",
-            sourceDatabase: "welcome_prod",
-            destinationConnectionId: "localhost",
-            destinationDatabase: "welcome",
-            strategy: "backup",
-            tables: ["users", "orders"]
-        ),
-        FakeRecipe(
-            id: "welcome_staging_local",
-            name: "Welcome staging → local",
-            sourceConnectionId: "welcome_prod",
-            sourceDatabase: "welcome_staging",
-            destinationConnectionId: "localhost",
-            destinationDatabase: "welcome_test",
-            strategy: "replace",
-            tables: []
-        ),
-        FakeRecipe(
-            id: "welcome_analytics",
-            name: "Analytics → local",
-            sourceConnectionId: "welcome_prod",
-            sourceDatabase: "analytics",
-            destinationConnectionId: "localhost",
-            destinationDatabase: "spicciolo",
-            strategy: "create",
-            tables: []
-        ),
-        FakeRecipe(
-            id: "voila_daily",
-            name: "Voilà daily",
-            sourceConnectionId: "voila_prod",
-            sourceDatabase: "voila",
-            destinationConnectionId: "localhost",
-            destinationDatabase: "voila",
-            strategy: "backup",
-            tables: []
-        )
-    ]
-
     @State private var selectedNav = ""
     @State private var selectedRecipeId = ""
     @State private var sourceDatabase = "welcome_prod"
@@ -133,6 +59,8 @@ struct ContentView: View {
     @State private var tableScope = "all"
     @State private var selectedTableNames: Set<String> = []
     @State private var skipTableReset = false
+    @State private var showSaveRecipeName = false
+    @State private var newRecipeTitle = ""
 
     var body: some View {
         HStack(spacing: 0) {
@@ -151,13 +79,18 @@ struct ContentView: View {
             newConnectionSheet
                 .preferredColorScheme(.light)
         }
+        .sheet(isPresented: $showSaveRecipeName) {
+            saveRecipeNameSheet
+                .preferredColorScheme(.light)
+        }
         .onAppear {
             if selectedNav.isEmpty, let first = model.connections.first {
                 selectNav(first.id.uuidString)
             }
         }
         .onChange(of: selectedRecipeId) { _, id in
-            if let recipe = recipes.first(where: { $0.id == id }) {
+            if let uuid = UUID(uuidString: id),
+               let recipe = model.recipes.first(where: { $0.id == uuid }) {
                 applyRecipe(recipe)
             }
         }
@@ -201,14 +134,17 @@ struct ContentView: View {
         model.connections.first { $0.id.uuidString == selectedNav }
     }
 
-    private var recipesForSelectedSource: [FakeRecipe] {
-        recipes.filter { $0.sourceConnectionId == selectedNav }
+    private var recipesForSelectedSource: [Recipe] {
+        guard let source = realSelectedConnection else {
+            return []
+        }
+        return Recipe.forSource(connectionId: source.id, in: model.recipes)
     }
 
     private var recipeMenuOptions: [(id: String, title: String)] {
         var options = [(id: "", title: "None")]
         for recipe in recipesForSelectedSource {
-            options.append((id: recipe.id, title: recipe.name))
+            options.append((id: recipe.id.uuidString, title: recipe.title))
         }
         return options
     }
@@ -453,7 +389,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     cardTitle("Recipe", icon: "bookmark")
                     HStack(alignment: .center, spacing: 8) {
-                        nativePicker(
+                        huggingPicker(
                             selection: $selectedRecipeId,
                             options: recipeMenuOptions
                         )
@@ -514,14 +450,23 @@ struct ContentView: View {
         )
     }
 
-    private func applyRecipe(_ recipe: FakeRecipe) {
+    private func applyRecipe(_ recipe: Recipe) {
         skipTableReset = true
         sourceDatabase = recipe.sourceDatabase
-        destinationConnectionId = recipe.destinationConnectionId
+        destinationConnectionId = recipe.destinationConnectionId.uuidString
         destinationDatabase = recipe.destinationDatabase
-        strategy = recipe.strategy
+        if recipe.strategy == .createNew {
+            strategy = "create"
+            newDatabaseName = recipe.destinationDatabase
+        } else if recipe.strategy == .backupThenReplace {
+            strategy = "backup"
+            newDatabaseName = "\(recipe.sourceDatabase)_fresh"
+        } else {
+            strategy = "replace"
+            newDatabaseName = "\(recipe.sourceDatabase)_fresh"
+        }
+        replaceMode = recipe.replaceMode.rawValue
         backupName = BackupName.defaultName(database: recipe.destinationDatabase, at: Date())
-        newDatabaseName = "\(recipe.sourceDatabase)_fresh"
         if recipe.tables.isEmpty {
             tableScope = "all"
             selectedTableNames = []
@@ -532,41 +477,112 @@ struct ContentView: View {
     }
 
     private func resetFormForCurrentConnection() {
-        guard let connection = selectedConnection else { return }
         skipTableReset = true
-        sourceDatabase = connection.databases.first ?? ""
-        destinationConnectionId = "localhost"
-        if let local = prototypeConnections.first(where: { $0.id == "localhost" }) {
-                destinationDatabase = local.databases.first ?? "welcome"
-            }
-        strategy = "backup"
+        sourceDatabase = ""
+        destinationConnectionId = model.connections.first { $0.name.lowercased() == "localhost" }?.id.uuidString
+            ?? realSelectedConnection?.id.uuidString
+            ?? ""
+        destinationDatabase = ""
+        strategy = "replace"
         replaceMode = ReplaceMode.importInPlace.rawValue
-        backupName = BackupName.defaultName(database: destinationDatabase, at: Date())
-        newDatabaseName = "\(sourceDatabase)_fresh"
+        backupName = ""
+        newDatabaseName = ""
         tableScope = "all"
         selectedTableNames = []
     }
 
     private func deleteSelectedRecipe() {
-        recipes.removeAll { $0.id == selectedRecipeId }
+        if let uuid = UUID(uuidString: selectedRecipeId) {
+            model.deleteRecipe(id: uuid)
+        }
         selectedRecipeId = ""
         resetFormForCurrentConnection()
     }
 
     private func duplicateSelectedRecipe() {
-        guard let recipe = recipes.first(where: { $0.id == selectedRecipeId }) else { return }
-        let copy = FakeRecipe(
-            id: UUID().uuidString,
-            name: recipe.name + " (copy)",
-            sourceConnectionId: recipe.sourceConnectionId,
-            sourceDatabase: recipe.sourceDatabase,
-            destinationConnectionId: recipe.destinationConnectionId,
-            destinationDatabase: recipe.destinationDatabase,
-            strategy: recipe.strategy,
-            tables: recipe.tables
+        guard let uuid = UUID(uuidString: selectedRecipeId),
+              let recipe = model.recipes.first(where: { $0.id == uuid }) else {
+            return
+        }
+        let copy = recipe.duplicated()
+        model.saveRecipe(copy)
+        selectedRecipeId = copy.id.uuidString
+    }
+
+    private var canSaveRecipe: Bool {
+        recipeFromCurrentForm(id: UUID(), title: "Recipe") != nil
+    }
+
+    private func recipeFromCurrentForm(id: UUID, title: String) -> Recipe? {
+        guard let source = realSelectedConnection,
+              let destId = UUID(uuidString: destinationConnectionId)
+        else {
+            return nil
+        }
+
+        let destName: String
+        let strategyValue: Strategy
+        if strategy == "create" {
+            destName = newDatabaseName
+            strategyValue = .createNew
+        } else if strategy == "backup" {
+            destName = destinationDatabase
+            strategyValue = .backupThenReplace
+        } else {
+            destName = destinationDatabase
+            strategyValue = .replace
+        }
+
+        if destName.isEmpty || sourceDatabase.isEmpty {
+            return nil
+        }
+
+        let chosenTables = tablesForSourceDatabase.filter { selectedTableNames.contains($0) }
+        if tableScope == "choose" && chosenTables.isEmpty {
+            return nil
+        }
+
+        let mode: ReplaceMode
+        if tableScope == "choose" {
+            mode = .importInPlace
+        } else {
+            mode = ReplaceMode(rawValue: replaceMode) ?? .importInPlace
+        }
+
+        return Recipe(
+            id: id,
+            title: title,
+            sourceConnectionId: source.id,
+            sourceDatabase: sourceDatabase,
+            destinationConnectionId: destId,
+            destinationDatabase: destName,
+            strategy: strategyValue,
+            replaceMode: mode,
+            tables: tableScope == "choose" ? chosenTables : []
         )
-        recipes.append(copy)
-        selectedRecipeId = copy.id
+    }
+
+    private func persistSelectedRecipe() {
+        guard let uuid = UUID(uuidString: selectedRecipeId),
+              let existing = model.recipes.first(where: { $0.id == uuid }),
+              let updated = recipeFromCurrentForm(id: existing.id, title: existing.title)
+        else {
+            return
+        }
+        model.saveRecipe(updated)
+    }
+
+    private func persistNewRecipe(title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false,
+              let recipe = recipeFromCurrentForm(id: UUID(), title: trimmed)
+        else {
+            return
+        }
+        model.saveRecipe(recipe)
+        selectedRecipeId = recipe.id.uuidString
+        showSaveRecipeName = false
+        newRecipeTitle = ""
     }
 
     private func originColumn(for connection: Connection) -> some View {
@@ -696,11 +712,19 @@ struct ContentView: View {
                 .padding(.bottom, 14)
 
             HStack {
-                Button {} label: {
+                Button {
+                    if selectedRecipeId.isEmpty {
+                        newRecipeTitle = ""
+                        showSaveRecipeName = true
+                    } else {
+                        persistSelectedRecipe()
+                    }
+                } label: {
                     Label("Save recipe", systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.extraLarge)
+                .disabled(canSaveRecipe == false)
 
                 Spacer()
 
@@ -721,8 +745,9 @@ struct ContentView: View {
             Text("Confirm dump")
                 .font(.system(size: 20, weight: .bold))
 
-            if let recipe = recipes.first(where: { $0.id == selectedRecipeId }) {
-                confirmLine("Recipe", recipe.name, icon: "bookmark")
+            if let uuid = UUID(uuidString: selectedRecipeId),
+               let recipe = model.recipes.first(where: { $0.id == uuid }) {
+                confirmLine("Recipe", recipe.title, icon: "bookmark")
             }
             if let summary = confirmSummaryForSheet {
                 confirmLine("Source", summary.sourceLabel, icon: "icloud")
@@ -920,6 +945,32 @@ struct ContentView: View {
         .background(Color.white)
     }
 
+    private var saveRecipeNameSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Save recipe")
+                .font(.system(size: 20, weight: .bold))
+
+            TextField("Title", text: $newRecipeTitle)
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    showSaveRecipeName = false
+                    newRecipeTitle = ""
+                }
+                Button("Save") {
+                    persistNewRecipe(title: newRecipeTitle)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(newRecipeTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(28)
+        .frame(width: 420)
+        .background(Color.white)
+    }
+
     private func confirmLine(_ label: String, _ value: String, icon: String) -> some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
@@ -946,6 +997,28 @@ struct ContentView: View {
         Text(text)
             .font(.system(size: 12, weight: .medium))
             .foregroundStyle(Color(red: 0.45, green: 0.49, blue: 0.55))
+    }
+
+    private func huggingPicker(selection: Binding<String>, options: [(id: String, title: String)]) -> some View {
+        let currentTitle = options.first(where: { $0.id == selection.wrappedValue })?.title ?? ""
+
+        return Menu {
+            ForEach(options, id: \.id) { option in
+                Button(option.title) {
+                    selection.wrappedValue = option.id
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(currentTitle)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.bordered)
+        .controlSize(.extraLarge)
     }
 
     private func nativePicker(selection: Binding<String>, options: [(id: String, title: String)]) -> some View {

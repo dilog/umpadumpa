@@ -77,15 +77,50 @@ struct OpenTunnel: Equatable {
     var localPort: Int
 }
 
-enum Strategy: String, Equatable {
+enum Strategy: String, Codable, Equatable {
     case replace
     case backupThenReplace = "backup-then-replace"
     case createNew = "create-new"
 }
 
-enum ReplaceMode: String, Equatable {
+enum ReplaceMode: String, Codable, Equatable {
     case importInPlace = "import-in-place"
     case dropDatabase = "drop-database"
+}
+
+struct Recipe: Identifiable, Codable, Equatable {
+    var id: UUID
+    var title: String
+    var sourceConnectionId: UUID
+    var sourceDatabase: String
+    var destinationConnectionId: UUID
+    var destinationDatabase: String
+    var strategy: Strategy
+    var replaceMode: ReplaceMode
+    var tables: [String]
+
+    func pullRequest(source: Connection, destination: Connection) -> PullRequest {
+        PullRequest(
+            sourceConnection: source,
+            sourceDatabase: sourceDatabase,
+            destinationConnection: destination,
+            destinationDatabase: destinationDatabase,
+            strategy: strategy,
+            replaceMode: replaceMode,
+            tables: tables
+        )
+    }
+
+    func duplicated() -> Recipe {
+        var copy = self
+        copy.id = UUID()
+        copy.title = title + " (copy)"
+        return copy
+    }
+
+    static func forSource(connectionId: UUID, in recipes: [Recipe]) -> [Recipe] {
+        recipes.filter { $0.sourceConnectionId == connectionId }
+    }
 }
 
 struct PullRequest: Equatable {

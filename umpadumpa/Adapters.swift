@@ -90,6 +90,10 @@ nonisolated final class DiskStore {
         folder.appendingPathComponent("settings.json")
     }
 
+    var recipesFile: URL {
+        folder.appendingPathComponent("recipes.json")
+    }
+
     init(folder: URL) {
         self.folder = folder
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -138,6 +142,35 @@ nonisolated final class DiskStore {
         if let data = try? JSONEncoder().encode(settings) {
             try? data.write(to: settingsFile)
         }
+    }
+
+    func loadRecipes() -> [Recipe] {
+        guard let data = try? Data(contentsOf: recipesFile) else {
+            return []
+        }
+        return (try? JSONDecoder().decode([Recipe].self, from: data)) ?? []
+    }
+
+    func saveRecipes(_ recipes: [Recipe]) {
+        if let data = try? JSONEncoder().encode(recipes) {
+            try? data.write(to: recipesFile)
+        }
+    }
+
+    func saveRecipe(_ recipe: Recipe) {
+        var all = loadRecipes()
+        if let index = all.firstIndex(where: { $0.id == recipe.id }) {
+            all[index] = recipe
+        } else {
+            all.append(recipe)
+        }
+        saveRecipes(all)
+    }
+
+    func deleteRecipe(id: UUID) {
+        var all = loadRecipes()
+        all.removeAll { $0.id == id }
+        saveRecipes(all)
     }
 }
 

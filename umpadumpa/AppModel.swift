@@ -10,6 +10,7 @@ final class AppModel {
     let engine: PullEngine
 
     var connections: [Connection] = []
+    var recipes: [Recipe] = []
     var history: [HistoryEntry] = []
 
     var selectedNav: String = ""
@@ -63,6 +64,7 @@ final class AppModel {
             paths: FilePathChecker()
         )
         self.connections = disk.loadConnections()
+        self.recipes = disk.loadRecipes()
         self.history = historyStore.entries
         let loadedSettings = settingsStore.load()
         self.mysqldumpPath = loadedSettings.mysqldumpPath
@@ -85,6 +87,16 @@ final class AppModel {
 
     func refreshHistory() {
         history = historyStore.entries
+    }
+
+    func saveRecipe(_ recipe: Recipe) {
+        disk.saveRecipe(recipe)
+        recipes = disk.loadRecipes()
+    }
+
+    func deleteRecipe(id: UUID) {
+        disk.deleteRecipe(id: id)
+        recipes = disk.loadRecipes()
     }
 
     var selectedConnection: Connection? {
