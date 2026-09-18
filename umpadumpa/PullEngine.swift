@@ -5,6 +5,7 @@ nonisolated final class PullEngine {
     private let clock: Clock
     private let processes: ProcessRunning
     private let history: HistoryStoring
+    private let tunnels: SSHTunneling
     private let lock = NSLock()
 
     private(set) var isRunning = false
@@ -13,21 +14,35 @@ nonisolated final class PullEngine {
         secrets: SecretStoring,
         clock: Clock,
         processes: ProcessRunning,
-        history: HistoryStoring
+        history: HistoryStoring,
+        tunnels: SSHTunneling
     ) {
         self.secrets = secrets
         self.clock = clock
         self.processes = processes
         self.history = history
+        self.tunnels = tunnels
     }
 
     func confirm(_ request: PullRequest) -> ConfirmSummary {
-        ConfirmSummary(
+        var request = request
+        if request.tables.isEmpty == false {
+            request.replaceMode = .importInPlace
+        }
+
+        let replaceModeLabel = request.replaceMode == .dropDatabase
+            ? "Drop database, then import"
+            : "Import in place"
+        let tablesLabel = request.tables.isEmpty
+            ? "All tables"
+            : request.tables.joined(separator: ", ")
+
+        return ConfirmSummary(
             sourceLabel: "\(request.sourceConnection.name) / \(request.sourceDatabase)",
             destinationLabel: "\(request.destinationConnection.name) / \(request.destinationDatabase)",
             strategyLabel: "Replace",
-            replaceModeLabel: "Import in place",
-            tablesLabel: request.tables.isEmpty ? "All tables" : request.tables.joined(separator: ", "),
+            replaceModeLabel: replaceModeLabel,
+            tablesLabel: tablesLabel,
             request: request
         )
     }
@@ -69,6 +84,35 @@ nonisolated final class PullEngine {
         }
 
         do {
+            if request.replaceMode == .dropDatabase {
+                try await processes.run(
+                    ExternalCommand(
+                        tool: .mysql,
+                        arguments: mysqlArguments(
+                            for: request.destinationConnection,
+                            database: nil,
+                            extra: ["-e", "DROP DATABASE `\(request.destinationDatabase)`"]
+                        ),
+                        environment: passwordEnvironment(for: request.destinationConnection.id),
+                        outputPath: nil,
+                        inputPath: nil
+                    )
+                )
+                try await processes.run(
+                    ExternalCommand(
+                        tool: .mysql,
+                        arguments: mysqlArguments(
+                            for: request.destinationConnection,
+                            database: nil,
+                            extra: ["-e", "CREATE DATABASE `\(request.destinationDatabase)`"]
+                        ),
+                        environment: passwordEnvironment(for: request.destinationConnection.id),
+                        outputPath: nil,
+                        inputPath: nil
+                    )
+                )
+            }
+
             try await processes.run(
                 ExternalCommand(
                     tool: .mysql,
@@ -89,13 +133,12 @@ nonisolated final class PullEngine {
         return entry
     }
 
-    private func mysqlArguments(for connection: Connection, database: String, extra: [String]) -> [String] {
+    private func mysqlArguments(for connection: Connection, database: String?, extra: [String]) -> [String] {
         extra + [
             "-h", connection.host,
             "-P", String(connection.port),
-            "-u", connection.user,
-            database
-        ]
+            "-u", connection.user
+        ] + (database.map { [$0] } ?? [])
     }
 
     private func passwordEnvironment(for connectionId: UUID) -> [String: String] {

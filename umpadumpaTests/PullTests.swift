@@ -6,6 +6,7 @@ final class PullTests: XCTestCase {
     private var clock: FixedClock!
     private var processes: FakeProcessRunner!
     private var history: MemoryHistoryStore!
+    private var tunnels: FakeSSHTunnel!
     private var engine: PullEngine!
 
     override func setUp() {
@@ -13,11 +14,13 @@ final class PullTests: XCTestCase {
         clock = FixedClock(now: Date(timeIntervalSince1970: 1_000_000))
         processes = FakeProcessRunner()
         history = MemoryHistoryStore()
+        tunnels = FakeSSHTunnel()
         engine = PullEngine(
             secrets: secrets,
             clock: clock,
             processes: processes,
-            history: history
+            history: history,
+            tunnels: tunnels
         )
 
         processes.tablesByDatabase["shop"] = ["users", "orders"]
@@ -72,6 +75,14 @@ final class PullTests: XCTestCase {
         XCTAssertTrue(processes.invocations.isEmpty)
     }
 
+    func testConfirmNamesDropDatabaseReplaceMode() {
+        var pull = request()
+        pull.replaceMode = .dropDatabase
+        let summary = engine.confirm(pull)
+
+        XCTAssertEqual(summary.replaceModeLabel, "Drop database, then import")
+    }
+
     func testSuccessfulImportInPlaceDumpsCompletelyBeforeMysqlAndKeepsExtraTables() async throws {
         let summary = engine.confirm(request())
         let entry = try await engine.run(summary)
@@ -95,6 +106,38 @@ final class PullTests: XCTestCase {
         let mysql = processes.invocations[1]
         XCTAssertEqual(mysql.environment["MYSQL_PWD"], "dst-secret")
         XCTAssertEqual(mysql.arguments.last, "local_shop")
+    }
+
+    func testDropDatabaseIssuesDropThenCreateThenImportAndRemovesExtraTables() async throws {
+        var pull = request()
+        pull.replaceMode = .dropDatabase
+        let summary = engine.confirm(pull)
+        let entry = try await engine.run(summary)
+
+        XCTAssertTrue(entry.succeeded)
+        XCTAssertTrue(processes.didSendDropDatabase)
+        XCTAssertTrue(processes.didSendCreateDatabase)
+        XCTAssertTrue(processes.dumpFileWasCompleteBeforeImport)
+
+        let tools = processes.invocations.map(\.tool)
+        XCTAssertEqual(tools, [.mysqldump, .mysql, .mysql, .mysql])
+
+        let drop = processes.invocations[1]
+        XCTAssertTrue(drop.arguments.contains("-e"))
+        XCTAssertTrue(drop.arguments.joined(separator: " ").contains("DROP DATABASE"))
+        XCTAssertNil(drop.inputPath)
+
+        let create = processes.invocations[2]
+        XCTAssertTrue(create.arguments.contains("-e"))
+        XCTAssertTrue(create.arguments.joined(separator: " ").contains("CREATE DATABASE"))
+        XCTAssertNil(create.inputPath)
+
+        let mysql = processes.invocations[3]
+        XCTAssertEqual(mysql.inputPath, processes.invocations[0].outputPath)
+        XCTAssertEqual(mysql.arguments.last, "local_shop")
+
+        XCTAssertEqual(processes.tablesByDatabase["local_shop"], ["users", "orders"])
+        XCTAssertFalse(processes.tablesByDatabase["local_shop"]!.contains("scratch_notes"))
     }
 
     func testDumpFailureNeverRunsMysqlAndRecordsFailedHistory() async {
@@ -144,6 +187,67 @@ final class PullTests: XCTestCase {
         XCTAssertFalse(engine.isRunning)
     }
 
+    func testConfirmNamesChosenTablesAndForcesImportInPlace() {
+        var pull = request()
+        pull.replaceMode = .dropDatabase
+        pull.tables = ["users", "orders"]
+
+        let summary = engine.confirm(pull)
+
+        XCTAssertEqual(summary.tablesLabel, "users, orders")
+        XCTAssertEqual(summary.replaceModeLabel, "Import in place")
+        XCTAssertEqual(summary.request.replaceMode, .importInPlace)
+        XCTAssertEqual(summary.request.tables, ["users", "orders"])
+    }
+
+    func testEmptyTablesStillMeansEntireDatabase() {
+        let summary = engine.confirm(request())
+
+        XCTAssertEqual(summary.tablesLabel, "All tables")
+        XCTAssertEqual(summary.request.tables, [])
+    }
+
+    func testSubsetDumpForwardsTableNamesAndDoesNotDropOtherDestinationTables() async throws {
+        var pull = request()
+        pull.replaceMode = .dropDatabase
+        pull.tables = ["users"]
+
+        let summary = engine.confirm(pull)
+        let entry = try await engine.run(summary)
+
+        XCTAssertTrue(entry.succeeded)
+        XCTAssertFalse(processes.didSendDropDatabase)
+        XCTAssertEqual(processes.tablesByDatabase["local_shop"], ["users", "scratch_notes"])
+
+        let dump = processes.invocations[0]
+        XCTAssertEqual(dump.tool, .mysqldump)
+        XCTAssertTrue(dump.arguments.contains("users"))
+        XCTAssertFalse(dump.arguments.contains("orders"))
+        XCTAssertEqual(dump.arguments.last, "users")
+    }
+
+    func testEntireDatabaseDumpDoesNotForwardTableNames() async throws {
+        let summary = engine.confirm(request())
+        _ = try await engine.run(summary)
+
+        let dump = processes.invocations[0]
+        XCTAssertEqual(dump.arguments.last, "shop")
+        XCTAssertFalse(dump.arguments.contains("users"))
+        XCTAssertFalse(dump.arguments.contains("orders"))
+    }
+
+    func testConfirmCreateNewShowsNewDatabaseNameAsDestination() {
+        var pull = request()
+        pull.strategy = .createNew
+        pull.destinationDatabase = "shop_fresh"
+
+        let summary = engine.confirm(pull)
+
+        XCTAssertEqual(summary.strategyLabel, "Create new")
+        XCTAssertEqual(summary.destinationLabel, "Localhost / shop_fresh")
+        XCTAssertEqual(summary.request.destinationDatabase, "shop_fresh")
+    }
+
     func testHistoryRowsAreOnlyALog() async throws {
         let summary = engine.confirm(request())
         _ = try await engine.run(summary)
@@ -151,6 +255,26 @@ final class PullTests: XCTestCase {
         XCTAssertEqual(history.entries.count, 1)
         // HistoryEntry is a record of what ran. There is no way to execute it.
         XCTAssertNil(Mirror(reflecting: history.entries[0]).children.first { $0.label == "request" })
+    }
+
+    func testSSHSourceDumpUsesTunnelAddressNotRemoteMySQLHost() async throws {
+        var pull = request()
+        pull.sourceConnection.usesSSH = true
+        pull.sourceConnection.sshHost = "bastion.example"
+        pull.sourceConnection.sshPort = 2222
+        pull.sourceConnection.sshUser = "jump"
+        pull.sourceConnection.sshAuthMethod = .password
+
+        tunnels.localPort = 61000
+        let summary = engine.confirm(pull)
+        _ = try await engine.run(summary)
+
+        let dump = processes.invocations[0]
+        XCTAssertEqual(dump.tool, .mysqldump)
+        XCTAssertTrue(dump.arguments.contains("127.0.0.1"))
+        XCTAssertTrue(dump.arguments.contains("61000"))
+        XCTAssertFalse(dump.arguments.contains("prod.example"))
+        XCTAssertEqual(processes.invocations.map(\.tool), [.mysqldump, .mysql])
     }
 }
 

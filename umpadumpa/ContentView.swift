@@ -125,6 +125,7 @@ struct ContentView: View {
     @State private var destinationConnectionId = "localhost"
     @State private var destinationDatabase = "welcome"
     @State private var strategy = "backup"
+    @State private var replaceMode = ReplaceMode.importInPlace.rawValue
     @State private var newDatabaseName = "welcome_fresh"
     @State private var backupName = "welcome_backup_20260918_1515"
     @State private var showSystemDatabases = false
@@ -335,6 +336,7 @@ struct ContentView: View {
                 ?? connection.id.uuidString
             destinationDatabase = ""
             strategy = "replace"
+            replaceMode = ReplaceMode.importInPlace.rawValue
             backupName = ""
             newDatabaseName = ""
             skipTableReset = true
@@ -523,6 +525,7 @@ struct ContentView: View {
                 destinationDatabase = local.databases.first ?? "welcome"
             }
         strategy = "backup"
+        replaceMode = ReplaceMode.importInPlace.rawValue
         backupName = "\(destinationDatabase)_backup_20260918_1515"
         newDatabaseName = "\(sourceDatabase)_fresh"
         tableScope = "all"
@@ -641,6 +644,20 @@ struct ContentView: View {
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.extraLarge)
             }
+
+            if tableScope == "all" && (strategy == "replace" || strategy == "backup") {
+                fieldLabel("Replace mode")
+                replaceModeChoice(
+                    id: ReplaceMode.dropDatabase.rawValue,
+                    title: "Drop database, then import",
+                    icon: "trash"
+                )
+                replaceModeChoice(
+                    id: ReplaceMode.importInPlace.rawValue,
+                    title: "Import in place",
+                    icon: "square.and.pencil"
+                )
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -679,11 +696,13 @@ struct ContentView: View {
             if let recipe = recipes.first(where: { $0.id == selectedRecipeId }) {
                 confirmLine("Recipe", recipe.name, icon: "bookmark")
             }
-            confirmLine("Source", confirmSourceLabel, icon: "icloud")
-            confirmLine("Destination", confirmDestinationLabel, icon: "internaldrive")
-            confirmLine("Strategy", "Replace", icon: "gearshape")
-            confirmLine("Replace mode", "Import in place", icon: "square.and.pencil")
-            confirmLine("Tables", "All tables", icon: "tablecells")
+            if let summary = confirmSummaryForSheet {
+                confirmLine("Source", summary.sourceLabel, icon: "icloud")
+                confirmLine("Destination", summary.destinationLabel, icon: "internaldrive")
+                confirmLine("Strategy", summary.strategyLabel, icon: "gearshape")
+                confirmLine("Replace mode", summary.replaceModeLabel, icon: "square.and.pencil")
+                confirmLine("Tables", summary.tablesLabel, icon: "tablecells")
+            }
 
             if strategy == "backup" {
                 TextField("Backup name", text: $backupName)
@@ -711,13 +730,11 @@ struct ContentView: View {
         .background(Color.white)
     }
 
-    private var confirmSourceLabel: String {
-        "\(realSelectedConnection?.name ?? "—") / \(sourceDatabase)"
-    }
-
-    private var confirmDestinationLabel: String {
-        let destName = model.connections.first { $0.id.uuidString == destinationConnectionId }?.name ?? "—"
-        return "\(destName) / \(destinationDatabase)"
+    private var confirmSummaryForSheet: ConfirmSummary? {
+        guard let request = currentPullRequest() else {
+            return nil
+        }
+        return model.engine.confirm(request)
     }
 
     private func currentPullRequest() -> PullRequest? {
@@ -735,7 +752,7 @@ struct ContentView: View {
             destinationConnection: dest,
             destinationDatabase: destinationDatabase,
             strategy: .replace,
-            replaceMode: .importInPlace,
+            replaceMode: ReplaceMode(rawValue: replaceMode) ?? .importInPlace,
             tables: []
         )
     }
@@ -906,6 +923,40 @@ struct ContentView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(Color(red: 0.45, green: 0.49, blue: 0.55))
         }
+    }
+
+    private func replaceModeChoice(id: String, title: String, icon: String) -> some View {
+        let isSelected = replaceMode == id
+
+        return Button {
+            replaceMode = id
+        } label: {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .stroke(
+                            isSelected
+                                ? Color(red: 0.15, green: 0.42, blue: 0.95)
+                                : Color(red: 0.78, green: 0.81, blue: 0.85),
+                            lineWidth: 1.5
+                        )
+                        .frame(width: 16, height: 16)
+                    if isSelected {
+                        Circle()
+                            .fill(Color(red: 0.15, green: 0.42, blue: 0.95))
+                            .frame(width: 8, height: 8)
+                    }
+                }
+                Image(systemName: icon)
+                    .font(.system(size: 12))
+                    .frame(width: 16)
+                    .foregroundStyle(Color(red: 0.35, green: 0.40, blue: 0.48))
+                Text(title)
+                    .font(.system(size: 13))
+                Spacer()
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private func operationChoice(id: String, title: String, icon: String) -> some View {

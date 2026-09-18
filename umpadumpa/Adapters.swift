@@ -134,11 +134,27 @@ nonisolated final class KeychainSecretStore: SecretStoring {
 }
 #endif
 
+nonisolated final class FakeSSHTunnel: SSHTunneling {
+    var localHost = "127.0.0.1"
+    var localPort = 61000
+    var failOpen = false
+    private(set) var openedFor: [Connection] = []
+
+    func openTunnel(for connection: Connection) async throws -> OpenTunnel {
+        openedFor.append(connection)
+        if failOpen {
+            throw PullError.tunnelFailed
+        }
+        return OpenTunnel(localHost: localHost, localPort: localPort)
+    }
+}
+
 nonisolated final class FakeProcessRunner: ProcessRunning {
     var tablesByDatabase: [String: Set<String>] = [:]
     private(set) var invocations: [ExternalCommand] = []
     private(set) var dumpFileWasCompleteBeforeImport = false
     private(set) var didSendDropDatabase = false
+    private(set) var didSendCreateDatabase = false
 
     var failDump = false
     var failImport = false
@@ -198,6 +214,25 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
                 throw PullError.importFailed
             }
 
+            if let eIndex = command.arguments.firstIndex(of: "-e"),
+               eIndex + 1 < command.arguments.count {
+                let sql = command.arguments[eIndex + 1]
+                let names = Array(tablesByDatabase.keys)
+                for name in names {
+                    if sql.contains(name) == false {
+                        continue
+                    }
+                    if sql.contains("DROP DATABASE") {
+                        didSendDropDatabase = true
+                        tablesByDatabase[name] = []
+                    }
+                    if sql.contains("CREATE DATABASE") {
+                        didSendCreateDatabase = true
+                    }
+                }
+                return
+            }
+
             let database = command.arguments.last ?? ""
             guard let inputPath = command.inputPath else {
                 return
@@ -220,6 +255,12 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
             }
             tablesByDatabase[database] = tables
         }
+    }
+}
+
+nonisolated final class RealSSHTunnel: SSHTunneling {
+    func openTunnel(for connection: Connection) async throws -> OpenTunnel {
+        throw PullError.tunnelFailed
     }
 }
 

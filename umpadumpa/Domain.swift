@@ -1,23 +1,44 @@
 import Foundation
 
+enum SSHAuthMethod: String, Codable, Equatable {
+    case password
+    case privateKey = "private-key"
+}
+
 struct Connection: Identifiable, Codable, Equatable {
     var id: UUID
     var name: String
     var host: String
     var port: Int
     var user: String
+    var usesSSH: Bool = false
+    var sshHost: String = ""
+    var sshPort: Int = 22
+    var sshUser: String = ""
+    var sshAuthMethod: SSHAuthMethod = .password
+    var sshKeyPath: String = ""
 
     var detail: String {
-        "\(host):\(port)"
+        if usesSSH {
+            return "\(host):\(port) · SSH"
+        }
+        return "\(host):\(port)"
     }
+}
+
+struct OpenTunnel: Equatable {
+    var localHost: String
+    var localPort: Int
 }
 
 enum Strategy: String, Equatable {
     case replace
+    case createNew = "create-new"
 }
 
 enum ReplaceMode: String, Equatable {
-    case importInPlace
+    case importInPlace = "import-in-place"
+    case dropDatabase = "drop-database"
 }
 
 struct PullRequest: Equatable {
@@ -51,6 +72,7 @@ enum PullError: Error, Equatable {
     case alreadyRunning
     case dumpFailed
     case importFailed
+    case tunnelFailed
 }
 
 enum ClientTool: Equatable {
@@ -77,6 +99,10 @@ protocol Clock {
 
 protocol ProcessRunning: AnyObject {
     func run(_ command: ExternalCommand) async throws
+}
+
+protocol SSHTunneling: AnyObject {
+    func openTunnel(for connection: Connection) async throws -> OpenTunnel
 }
 
 protocol HistoryStoring: AnyObject {
