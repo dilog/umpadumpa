@@ -50,7 +50,7 @@ struct ContentView: View {
 
     @State private var selectedNav = ""
     @State private var selectedRecipeId = ""
-    @State private var sourceDatabase = "welcome_prod"
+    @State private var sourceDatabase = ""
     @State private var destinationConnectionId = "localhost"
     @State private var destinationDatabase = "welcome"
     @State private var strategy = "backup"
@@ -161,6 +161,28 @@ struct ContentView: View {
             return connection.databases + connection.systemDatabases
         }
         return connection.databases
+    }
+
+    private func sourceDatabasePickerOptions(for connection: Connection) -> [(id: String, title: String)] {
+        let live = SystemDatabases.visible(
+            model.databaseNamesByConnectionId[connection.id] ?? [],
+            showSystem: showSystemDatabases
+        )
+        var options = [(id: "", title: "Choose a Database")]
+        for name in live {
+            options.append((id: name, title: name))
+        }
+        if sourceDatabase.isEmpty == false && live.contains(sourceDatabase) == false {
+            options.append((id: sourceDatabase, title: "\(sourceDatabase) (absent)"))
+        }
+        return options
+    }
+
+    private func copyText(_ text: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #endif
     }
 
     private var strategyLabel: String {
@@ -386,6 +408,8 @@ struct ContentView: View {
                 selectedRecipeId = recipe.id.uuidString
                 applyRecipe(recipe)
             }
+
+            model.loadDatabases(for: connection, force: false)
         }
     }
 
@@ -554,6 +578,9 @@ struct ContentView: View {
         .padding(.horizontal, 28)
         .padding(.bottom, 18)
         .padding(.top, 16)
+        .onAppear {
+            model.loadDatabases(for: connection, force: false)
+        }
     }
 
     private func tableBinding(_ tableName: String) -> Binding<Bool> {
@@ -726,9 +753,38 @@ struct ContentView: View {
             lockedField(text: connection.name, icon: "lock.fill")
 
             fieldLabel("Database")
-            TextField("Database", text: $sourceDatabase)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.extraLarge)
+            HStack(alignment: .center, spacing: 8) {
+                nativePicker(
+                    selection: $sourceDatabase,
+                    options: sourceDatabasePickerOptions(for: connection)
+                )
+                if model.loadingDatabaseConnectionId == connection.id {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Button(model.databaseListErrorByConnectionId[connection.id] == nil ? "Refresh" : "Retry") {
+                    model.loadDatabases(for: connection, force: true)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
+                .disabled(model.isPulling)
+            }
+
+            if let listError = model.databaseListErrorByConnectionId[connection.id] {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(listError)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(red: 0.90, green: 0.30, blue: 0.30))
+                        .textSelection(.enabled)
+                    Button("Copy") {
+                        copyText(listError)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
+                }
+            }
 
             Toggle("System databases", isOn: $showSystemDatabases)
                 .font(.system(size: 12))

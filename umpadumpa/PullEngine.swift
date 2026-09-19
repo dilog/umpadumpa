@@ -309,6 +309,45 @@ nonisolated final class PullEngine {
         return entry
     }
 
+    func listDatabases(on connection: Connection) async throws -> [String] {
+        lock.lock()
+        if isRunning {
+            lock.unlock()
+            throw PullError.alreadyRunning
+        }
+        lock.unlock()
+
+        defer {
+            tunnels.closeOpenedTunnels()
+        }
+
+        _ = try executable(for: .mysql)
+        let reach = try await openReachability(for: connection)
+        let listingFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("umpadumpa-databases-\(UUID().uuidString).txt")
+            .path
+
+        do {
+            try await processes.run(
+                try command(
+                    tool: .mysql,
+                    connection: connection,
+                    host: reach.localHost,
+                    port: reach.localPort,
+                    database: nil,
+                    extra: ["-e", "SHOW DATABASES"],
+                    outputPath: listingFile,
+                    inputPath: nil
+                )
+            )
+        } catch {
+            throw PullError.listingFailed
+        }
+
+        let listing = (try? String(contentsOfFile: listingFile, encoding: .utf8)) ?? ""
+        return databaseNames(fromListing: listing)
+    }
+
     private func reachability(for connection: Connection, historyRequest: PullRequest) async throws -> OpenTunnel {
         do {
             return try await openReachability(for: connection)

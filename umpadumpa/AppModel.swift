@@ -24,6 +24,9 @@ final class AppModel {
     var isPulling = false
     var pullPhase: PullPhase = .idle
     var pullProgress = PullProgress(phase: .idle, tablesReached: 0, tablesTotal: 0, dumpFileMegabytes: nil)
+    var databaseNamesByConnectionId: [UUID: [String]] = [:]
+    var databaseListErrorByConnectionId: [UUID: String] = [:]
+    var loadingDatabaseConnectionId: UUID?
 
     var newName = ""
     var newHost = ""
@@ -235,6 +238,57 @@ final class AppModel {
             return nil
         }
         return engine.confirm(request)
+    }
+
+    func loadDatabases(for connection: Connection, force: Bool) {
+        if isPulling || engine.isRunning {
+            return
+        }
+        if force == false,
+           databaseNamesByConnectionId[connection.id] != nil,
+           databaseListErrorByConnectionId[connection.id] == nil {
+            return
+        }
+
+        loadingDatabaseConnectionId = connection.id
+        databaseListErrorByConnectionId[connection.id] = nil
+        Task {
+            do {
+                let names = try await engine.listDatabases(on: connection)
+                await MainActor.run {
+                    databaseNamesByConnectionId[connection.id] = names
+                    databaseListErrorByConnectionId[connection.id] = nil
+                    if loadingDatabaseConnectionId == connection.id {
+                        loadingDatabaseConnectionId = nil
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    if loadingDatabaseConnectionId == connection.id {
+                        loadingDatabaseConnectionId = nil
+                    }
+                    databaseListErrorByConnectionId[connection.id] = listingErrorMessage(error)
+                }
+            }
+        }
+    }
+
+    private func listingErrorMessage(_ error: Error) -> String {
+        if let pullError = error as? PullError {
+            if pullError == .alreadyRunning {
+                return "A Pull is already running."
+            }
+            if pullError == .tunnelFailed {
+                return "SSH tunnel failed."
+            }
+            if pullError == .missingClient(.mysql) {
+                return "mysql was not found. Set its path in Settings."
+            }
+            if pullError == .listingFailed {
+                return "Could not list Databases."
+            }
+        }
+        return "Could not list Databases."
     }
 
     func runConfirmedPull() {

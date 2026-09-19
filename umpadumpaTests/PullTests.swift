@@ -770,6 +770,102 @@ final class PullTests: XCTestCase {
 
         XCTAssertEqual(lastRecipes.lastRecipeId(forSourceConnectionId: source.id), recipeId)
     }
+
+    func testListDatabasesRunsShowDatabasesWithSecretsAndClosesTunnel() async throws {
+        processes.tablesByDatabase["mysql"] = []
+        processes.tablesByDatabase["information_schema"] = []
+        var connection = source
+        connection.usesSSH = true
+        connection.sshHost = "bastion.example"
+        connection.sshUser = "jump"
+
+        let names = try await engine.listDatabases(on: connection)
+
+        XCTAssertEqual(names, ["information_schema", "local_shop", "mysql", "shop"])
+        XCTAssertTrue(history.entries.isEmpty)
+
+        let listing = processes.invocations.first { command in
+            command.tool == .mysql && command.arguments.contains("SHOW DATABASES")
+        }
+        XCTAssertEqual(listing?.executable, "mysql")
+        XCTAssertEqual(listing?.environment["MYSQL_PWD"], "src-secret")
+        XCTAssertEqual(tunnels.openedFor, [connection])
+        XCTAssertEqual(tunnels.closeCount, 1)
+    }
+
+    func testListDatabasesUsesConfiguredMysqlPath() async throws {
+        settings.save(
+            ClientSettings(
+                mysqldumpPath: "/opt/homebrew/bin/mysqldump",
+                mysqlPath: "/opt/homebrew/bin/mysql"
+            )
+        )
+
+        _ = try await engine.listDatabases(on: source)
+
+        let listing = processes.invocations.first { command in
+            command.tool == .mysql && command.arguments.contains("SHOW DATABASES")
+        }
+        XCTAssertEqual(listing?.executable, "/opt/homebrew/bin/mysql")
+        XCTAssertTrue(history.entries.isEmpty)
+        XCTAssertEqual(tunnels.closeCount, 1)
+    }
+
+    func testListDatabasesFailureClosesTunnelAndDoesNotWriteHistory() async {
+        processes.failShowDatabases = true
+        var connection = source
+        connection.usesSSH = true
+        connection.sshHost = "bastion.example"
+        connection.sshUser = "jump"
+
+        do {
+            _ = try await engine.listDatabases(on: connection)
+            XCTFail("expected listing failure")
+        } catch PullError.listingFailed {
+            // expected
+        } catch {
+            XCTFail("wrong error \(error)")
+        }
+
+        XCTAssertTrue(history.entries.isEmpty)
+        XCTAssertEqual(tunnels.openedFor.count, 1)
+        XCTAssertEqual(tunnels.closeCount, 1)
+    }
+
+    func testListDatabasesIsRefusedWhileAPullIsRunning() async throws {
+        processes.holdDump = true
+        let summary = engine.confirm(request())
+        let first = Task {
+            try await engine.run(summary)
+        }
+        await processes.waitUntilDumpIsHeld()
+        let invocationsBeforeListing = processes.invocations.count
+
+        do {
+            _ = try await engine.listDatabases(on: source)
+            XCTFail("listing should be refused")
+        } catch PullError.alreadyRunning {
+            // expected
+        } catch {
+            XCTFail("wrong error \(error)")
+        }
+
+        XCTAssertEqual(processes.invocations.count, invocationsBeforeListing)
+        XCTAssertTrue(history.entries.isEmpty)
+
+        processes.releaseDump()
+        _ = try await first.value
+    }
+
+    func testSystemDatabasesStayHiddenUnlessShown() {
+        let names = ["shop", "mysql", "information_schema", "performance_schema", "sys", "local_shop"]
+
+        XCTAssertEqual(
+            SystemDatabases.visible(names, showSystem: false),
+            ["shop", "local_shop"]
+        )
+        XCTAssertEqual(SystemDatabases.visible(names, showSystem: true), names)
+    }
 }
 
 final class SettingsStoreTests: XCTestCase {

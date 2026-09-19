@@ -172,6 +172,7 @@ enum PullError: Error, Equatable {
     case tunnelFailed
     case missingClient(ClientTool)
     case nameAlreadyExists
+    case listingFailed
 }
 
 enum PullPhase: Equatable {
@@ -261,6 +262,22 @@ protocol SettingsStoring: AnyObject {
 
 protocol PathChecking {
     func pathExists(_ path: String) -> Bool
+}
+
+enum SystemDatabases {
+    static let names: Set<String> = [
+        "mysql",
+        "information_schema",
+        "performance_schema",
+        "sys"
+    ]
+
+    static func visible(_ names: [String], showSystem: Bool) -> [String] {
+        if showSystem {
+            return names
+        }
+        return names.filter { Self.names.contains($0) == false }
+    }
 }
 
 enum BackupName {
