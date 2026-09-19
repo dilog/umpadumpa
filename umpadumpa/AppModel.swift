@@ -23,6 +23,7 @@ final class AppModel {
     var pullError: String?
     var isPulling = false
     var pullPhase: PullPhase = .idle
+    var pullProgress = PullProgress(phase: .idle, tablesReached: 0, tablesTotal: 0, dumpFileMegabytes: nil)
 
     var newName = ""
     var newHost = ""
@@ -71,6 +72,12 @@ final class AppModel {
         self.engine.onPhase = { [weak self] phase in
             Task { @MainActor in
                 self?.pullPhase = phase
+            }
+        }
+        self.engine.onProgress = { [weak self] progress in
+            Task { @MainActor in
+                self?.pullProgress = progress
+                self?.pullPhase = progress.phase
             }
         }
         self.connections = disk.loadConnections()

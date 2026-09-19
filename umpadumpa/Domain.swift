@@ -183,6 +183,13 @@ enum PullPhase: Equatable {
     case failed
 }
 
+struct PullProgress: Equatable {
+    var phase: PullPhase
+    var tablesReached: Int
+    var tablesTotal: Int
+    var dumpFileMegabytes: Int?
+}
+
 enum ClientTool: Equatable {
     case mysqldump
     case mysql
@@ -219,7 +226,16 @@ protocol Clock {
 }
 
 protocol ProcessRunning: AnyObject {
-    func run(_ command: ExternalCommand) async throws
+    func run(
+        _ command: ExternalCommand,
+        onStandardErrorLine: (@Sendable (String) -> Void)?
+    ) async throws
+}
+
+extension ProcessRunning {
+    func run(_ command: ExternalCommand) async throws {
+        try await run(command, onStandardErrorLine: nil)
+    }
 }
 
 protocol SSHTunneling: AnyObject {

@@ -169,8 +169,90 @@ final class PullTests: XCTestCase {
         XCTAssertNotNil(destDump)
         XCTAssertTrue(destDump!.arguments.contains("--compression-algorithms=zstd,zlib,uncompressed"))
         XCTAssertFalse(destDump!.arguments.contains("--compress"))
-        XCTAssertFalse(destDump!.arguments.contains { $0.localizedCaseInsensitiveContains("gzip") })
+        XCTAssertFalse(destDump!.arguments.contains { $0 == "--gzip" || $0.hasSuffix(".gz") })
         XCTAssertEqual((destDump!.outputPath as NSString?)?.pathExtension, "sql")
+    }
+
+    func testEntireDatabaseDumpUsesShowTablesAndReportsNOfMDuringDump() async throws {
+        var progress: [PullProgress] = []
+        let lock = NSLock()
+        engine.onProgress = { update in
+            lock.lock()
+            progress.append(update)
+            lock.unlock()
+        }
+
+        _ = try await engine.run(engine.confirm(request()))
+
+        let showTables = processes.invocations.first { command in
+            command.tool == .mysql && command.arguments.joined(separator: " ").contains("SHOW TABLES")
+        }
+        XCTAssertNotNil(showTables)
+        XCTAssertTrue(showTables!.arguments.contains("shop"))
+
+        let dumpProgress = progress.filter { update in
+            update.phase == .dumpingSource && update.tablesTotal > 0
+        }
+        XCTAssertEqual(dumpProgress.first?.tablesTotal, 2)
+        XCTAssertEqual(dumpProgress.first?.tablesReached, 0)
+        XCTAssertEqual(dumpProgress.last?.tablesReached, 2)
+        XCTAssertEqual(dumpProgress.last?.tablesTotal, 2)
+
+        let importProgress = progress.filter { $0.phase == .importingDestination }
+        XCTAssertFalse(importProgress.isEmpty)
+        XCTAssertTrue(importProgress.allSatisfy { $0.tablesTotal == 0 && $0.tablesReached == 0 })
+    }
+
+    func testSubsetDumpUsesPullTablesAsMAndDoesNotShowTablesForM() async throws {
+        var progress: [PullProgress] = []
+        let lock = NSLock()
+        engine.onProgress = { update in
+            lock.lock()
+            progress.append(update)
+            lock.unlock()
+        }
+
+        var pull = request()
+        pull.tables = ["users"]
+        _ = try await engine.run(engine.confirm(pull))
+
+        let showedTables = processes.invocations.contains { command in
+            command.tool == .mysql && command.arguments.joined(separator: " ").contains("SHOW TABLES")
+        }
+        XCTAssertFalse(showedTables)
+
+        let dumpProgress = progress.filter { update in
+            update.phase == .dumpingSource && update.tablesTotal > 0
+        }
+        XCTAssertEqual(dumpProgress.first?.tablesTotal, 1)
+        XCTAssertEqual(dumpProgress.last?.tablesReached, 1)
+        XCTAssertEqual(dumpProgress.last?.tablesTotal, 1)
+    }
+
+    func testBackupDumpReportsTableProgressTheSameWay() async throws {
+        var progress: [PullProgress] = []
+        let lock = NSLock()
+        engine.onProgress = { update in
+            lock.lock()
+            progress.append(update)
+            lock.unlock()
+        }
+
+        var pull = request()
+        pull.strategy = .backupThenReplace
+        _ = try await engine.run(engine.confirm(pull))
+
+        let backupShowTables = processes.invocations.filter { command in
+            command.tool == .mysql && command.arguments.joined(separator: " ").contains("SHOW TABLES")
+        }
+        XCTAssertEqual(backupShowTables.count, 2)
+
+        let backupProgress = progress.filter { update in
+            update.phase == .creatingBackup && update.tablesTotal > 0
+        }
+        XCTAssertEqual(backupProgress.first?.tablesTotal, 2)
+        XCTAssertEqual(backupProgress.last?.tablesReached, 2)
+        XCTAssertEqual(backupProgress.last?.tablesTotal, 2)
     }
 
     func testBackupThenReplaceReportsDumpBackupImportThenSucceeded() async throws {
@@ -267,18 +349,18 @@ final class PullTests: XCTestCase {
         XCTAssertEqual(entry.destination, "Localhost / local_shop")
         XCTAssertEqual(entry.when, Date(timeIntervalSince1970: 1_000_000))
 
-        XCTAssertEqual(processes.invocations.map(\.tool), [.mysqldump, .mysql])
+        XCTAssertEqual(processes.invocations.filter { $0.tool == .mysqldump }.count, 1)
         XCTAssertTrue(processes.dumpFileWasCompleteBeforeImport)
         XCTAssertFalse(processes.didSendDropDatabase)
 
         XCTAssertEqual(processes.tablesByDatabase["local_shop"], ["users", "orders", "scratch_notes"])
 
-        let dump = processes.invocations[0]
+        let dump = processes.invocations.first { $0.tool == .mysqldump }!
         XCTAssertTrue(dump.arguments.contains("--add-drop-table"))
         XCTAssertEqual(dump.environment["MYSQL_PWD"], "src-secret")
         XCTAssertFalse(dump.arguments.contains("src-secret"))
 
-        let mysql = processes.invocations[1]
+        let mysql = processes.invocations.last { $0.tool == .mysql && $0.inputPath != nil }!
         XCTAssertEqual(mysql.environment["MYSQL_PWD"], "dst-secret")
         XCTAssertEqual(mysql.arguments.last, "local_shop")
     }
@@ -294,21 +376,23 @@ final class PullTests: XCTestCase {
         XCTAssertTrue(processes.didSendCreateDatabase)
         XCTAssertTrue(processes.dumpFileWasCompleteBeforeImport)
 
-        let tools = processes.invocations.map(\.tool)
-        XCTAssertEqual(tools, [.mysqldump, .mysql, .mysql, .mysql])
+        XCTAssertTrue(processes.invocations.contains { $0.tool == .mysqldump })
 
-        let drop = processes.invocations[1]
+        let drop = processes.invocations.first { command in
+            command.tool == .mysql && command.arguments.joined(separator: " ").contains("DROP DATABASE")
+        }!
         XCTAssertTrue(drop.arguments.contains("-e"))
-        XCTAssertTrue(drop.arguments.joined(separator: " ").contains("DROP DATABASE"))
         XCTAssertNil(drop.inputPath)
 
-        let create = processes.invocations[2]
+        let create = processes.invocations.first { command in
+            command.tool == .mysql && command.arguments.joined(separator: " ").contains("CREATE DATABASE")
+        }!
         XCTAssertTrue(create.arguments.contains("-e"))
-        XCTAssertTrue(create.arguments.joined(separator: " ").contains("CREATE DATABASE"))
         XCTAssertNil(create.inputPath)
 
-        let mysql = processes.invocations[3]
-        XCTAssertEqual(mysql.inputPath, processes.invocations[0].outputPath)
+        let dump = processes.invocations.first { $0.tool == .mysqldump }!
+        let mysql = processes.invocations.last { $0.tool == .mysql && $0.inputPath != nil }!
+        XCTAssertEqual(mysql.inputPath, dump.outputPath)
         XCTAssertEqual(mysql.arguments.last, "local_shop")
 
         XCTAssertEqual(processes.tablesByDatabase["local_shop"], ["users", "orders"])
@@ -328,7 +412,8 @@ final class PullTests: XCTestCase {
             XCTFail("wrong error \(error)")
         }
 
-        XCTAssertEqual(processes.invocations.map(\.tool), [.mysqldump])
+        XCTAssertEqual(processes.invocations.filter { $0.tool == .mysqldump }.count, 1)
+        XCTAssertFalse(processes.invocations.contains { $0.tool == .mysql && $0.inputPath != nil })
         XCTAssertEqual(processes.tablesByDatabase["local_shop"], ["users", "scratch_notes"])
         XCTAssertEqual(history.entries.count, 1)
         XCTAssertEqual(history.entries[0].succeeded, false)
@@ -353,7 +438,7 @@ final class PullTests: XCTestCase {
             XCTFail("wrong error \(error)")
         }
 
-        XCTAssertEqual(processes.invocations.map(\.tool), [.mysqldump])
+        XCTAssertEqual(processes.invocations.filter { $0.tool == .mysqldump }.count, 1)
         XCTAssertEqual(tunnels.openedFor.count, 1)
         XCTAssertEqual(tunnels.closeCount, 1)
     }
@@ -427,7 +512,7 @@ final class PullTests: XCTestCase {
         let summary = engine.confirm(request())
         _ = try await engine.run(summary)
 
-        let dump = processes.invocations[0]
+        let dump = processes.invocations.first { $0.tool == .mysqldump }!
         XCTAssertEqual(dump.arguments.last, "shop")
         XCTAssertFalse(dump.arguments.contains("users"))
         XCTAssertFalse(dump.arguments.contains("orders"))
@@ -505,12 +590,10 @@ final class PullTests: XCTestCase {
         let summary = engine.confirm(pull)
         _ = try await engine.run(summary)
 
-        let dump = processes.invocations[0]
-        XCTAssertEqual(dump.tool, .mysqldump)
+        let dump = processes.invocations.first { $0.tool == .mysqldump }!
         XCTAssertTrue(dump.arguments.contains("127.0.0.1"))
         XCTAssertTrue(dump.arguments.contains("61000"))
         XCTAssertFalse(dump.arguments.contains("prod.example"))
-        XCTAssertEqual(processes.invocations.map(\.tool), [.mysqldump, .mysql])
         XCTAssertEqual(tunnels.closeCount, 1)
     }
 
@@ -556,7 +639,7 @@ final class PullTests: XCTestCase {
     func testDirectConnectionStillUsesMySQLHostAndPort() async throws {
         _ = try await engine.run(engine.confirm(request()))
 
-        let dump = processes.invocations[0]
+        let dump = processes.invocations.first { $0.tool == .mysqldump }!
         XCTAssertTrue(dump.arguments.contains("prod.example"))
         XCTAssertTrue(dump.arguments.contains("3306"))
         XCTAssertTrue(tunnels.openedFor.isEmpty)
@@ -584,8 +667,8 @@ final class PullTests: XCTestCase {
         let summary = engine.confirm(request())
         _ = try await engine.run(summary)
 
-        XCTAssertEqual(processes.invocations[0].executable, "mysqldump")
-        XCTAssertEqual(processes.invocations[1].executable, "mysql")
+        XCTAssertEqual(processes.invocations.first { $0.tool == .mysqldump }?.executable, "mysqldump")
+        XCTAssertEqual(processes.invocations.last { $0.tool == .mysql }?.executable, "mysql")
     }
 
     func testConfiguredSettingsPathsAreUsedOnDumpAndImport() async throws {
@@ -599,8 +682,8 @@ final class PullTests: XCTestCase {
         let summary = engine.confirm(request())
         _ = try await engine.run(summary)
 
-        XCTAssertEqual(processes.invocations[0].executable, "/opt/homebrew/bin/mysqldump")
-        XCTAssertEqual(processes.invocations[1].executable, "/opt/homebrew/bin/mysql")
+        XCTAssertEqual(processes.invocations.first { $0.tool == .mysqldump }?.executable, "/opt/homebrew/bin/mysqldump")
+        XCTAssertEqual(processes.invocations.last { $0.tool == .mysql }?.executable, "/opt/homebrew/bin/mysql")
     }
 
     func testMissingConfiguredClientFailsBeforeDestinationAndRecordsFailedHistory() async {
@@ -998,6 +1081,8 @@ final class RecipeStoreTests: XCTestCase {
         let disk = DiskStore(folder: folder)
         let lastRecipes = DiskLastRecipeStore(disk: disk)
         let recipe = dailyRecipe()
+        var recipeForPull = recipe
+        recipeForPull.strategy = .replace
         disk.saveRecipe(recipe)
 
         let secrets = MemorySecretStore()
@@ -1021,15 +1106,13 @@ final class RecipeStoreTests: XCTestCase {
             lastRecipes: lastRecipes
         )
 
-        let recipePull = recipe.pullRequest(source: source, destination: destination)
+        let recipePull = recipeForPull.pullRequest(source: source, destination: destination)
         XCTAssertEqual(recipePull.recipeId, recipe.id)
         _ = try await engine.run(engine.confirm(recipePull))
         XCTAssertEqual(disk.lastRecipeId(forSourceConnectionId: sourceId), recipe.id)
 
         var oneOff = recipePull
         oneOff.recipeId = nil
-        oneOff.strategy = .replace
-        oneOff.destinationDatabase = "local_shop"
         _ = try await engine.run(engine.confirm(oneOff))
         XCTAssertEqual(disk.lastRecipeId(forSourceConnectionId: sourceId), recipe.id)
     }

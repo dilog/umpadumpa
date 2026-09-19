@@ -13,6 +13,8 @@ nonisolated final class PullEngine {
 
     private(set) var isRunning = false
     var onPhase: (@Sendable (PullPhase) -> Void)?
+    var onProgress: (@Sendable (PullProgress) -> Void)?
+    private var lastReportedPhase: PullPhase?
 
     init(
         secrets: SecretStoring,
@@ -82,6 +84,7 @@ nonisolated final class PullEngine {
         }
         isRunning = true
         lock.unlock()
+        lastReportedPhase = nil
         report(.dumpingSource)
 
         defer {
@@ -144,18 +147,24 @@ nonisolated final class PullEngine {
         let sourceReach = try await reachability(for: request.sourceConnection, historyRequest: request)
 
         do {
-            try await processes.run(
-                try command(
-                    tool: .mysqldump,
-                    connection: request.sourceConnection,
-                    host: sourceReach.localHost,
-                    port: sourceReach.localPort,
-                    database: request.sourceDatabase,
-                    extra: ["--add-drop-table"],
-                    tables: request.tables,
-                    outputPath: dumpFile,
-                    inputPath: nil
-                )
+            let sourceTables = try await tableNamesForDump(
+                connection: request.sourceConnection,
+                reach: sourceReach,
+                database: request.sourceDatabase,
+                namedTables: request.tables,
+                historyRequest: request,
+                failAs: .dumpFailed("")
+            )
+            report(.dumpingSource, tablesReached: 0, tablesTotal: sourceTables.count)
+            try await runDump(
+                connection: request.sourceConnection,
+                host: sourceReach.localHost,
+                port: sourceReach.localPort,
+                database: request.sourceDatabase,
+                tables: request.tables,
+                outputPath: dumpFile,
+                phase: .dumpingSource,
+                tablesTotal: sourceTables.count
             )
         } catch let PullError.dumpFailed(detail) {
             let entry = makeHistory(request: request, succeeded: false)
@@ -188,17 +197,24 @@ nonisolated final class PullEngine {
                 let backupFile = FileManager.default.temporaryDirectory
                     .appendingPathComponent("umpadumpa-backup-\(UUID().uuidString).sql")
                     .path
-                try await processes.run(
-                    try command(
-                        tool: .mysqldump,
-                        connection: request.destinationConnection,
-                        host: destinationReach.localHost,
-                        port: destinationReach.localPort,
-                        database: request.destinationDatabase,
-                        extra: ["--add-drop-table"],
-                        outputPath: backupFile,
-                        inputPath: nil
-                    )
+                let backupTables = try await tableNamesForDump(
+                    connection: request.destinationConnection,
+                    reach: destinationReach,
+                    database: request.destinationDatabase,
+                    namedTables: [],
+                    historyRequest: request,
+                    failAs: .importFailed
+                )
+                report(.creatingBackup, tablesReached: 0, tablesTotal: backupTables.count)
+                try await runDump(
+                    connection: request.destinationConnection,
+                    host: destinationReach.localHost,
+                    port: destinationReach.localPort,
+                    database: request.destinationDatabase,
+                    tables: [],
+                    outputPath: backupFile,
+                    phase: .creatingBackup,
+                    tablesTotal: backupTables.count
                 )
                 try await processes.run(
                     try command(
@@ -329,10 +345,13 @@ nonisolated final class PullEngine {
         let dumpCompression = tool == .mysqldump
             ? ["--compression-algorithms=zstd,zlib,uncompressed"]
             : []
+        let verboseDump = tool == .mysqldump
+            ? ["--verbose"]
+            : []
         return ExternalCommand(
             tool: tool,
             executable: executable,
-            arguments: dumpCompression + extra + [
+            arguments: dumpCompression + verboseDump + extra + [
                 "-h", host,
                 "-P", String(port),
                 "-u", connection.user
@@ -396,8 +415,148 @@ nonisolated final class PullEngine {
         return environment
     }
 
-    private func report(_ phase: PullPhase) {
-        onPhase?(phase)
+    private func report(
+        _ phase: PullPhase,
+        tablesReached: Int = 0,
+        tablesTotal: Int = 0,
+        dumpFileMegabytes: Int? = nil
+    ) {
+        if lastReportedPhase != phase {
+            lastReportedPhase = phase
+            onPhase?(phase)
+        }
+        onProgress?(
+            PullProgress(
+                phase: phase,
+                tablesReached: tablesReached,
+                tablesTotal: tablesTotal,
+                dumpFileMegabytes: dumpFileMegabytes
+            )
+        )
+    }
+
+    private func runDump(
+        connection: Connection,
+        host: String,
+        port: Int,
+        database: String,
+        tables: [String],
+        outputPath: String,
+        phase: PullPhase,
+        tablesTotal: Int
+    ) async throws {
+        var reachedNames: [String] = []
+        try await processes.run(
+            try command(
+                tool: .mysqldump,
+                connection: connection,
+                host: host,
+                port: port,
+                database: database,
+                extra: ["--add-drop-table"],
+                tables: tables,
+                outputPath: outputPath,
+                inputPath: nil
+            ),
+            onStandardErrorLine: { [weak self] line in
+                if let name = Self.tableNameFromVerboseDumpLine(line),
+                   reachedNames.contains(name) == false {
+                    reachedNames.append(name)
+                }
+                let megabytes = Self.dumpFileMegabytes(at: outputPath)
+                self?.report(
+                    phase,
+                    tablesReached: reachedNames.count,
+                    tablesTotal: tablesTotal,
+                    dumpFileMegabytes: megabytes
+                )
+            }
+        )
+    }
+
+    private func tableNamesForDump(
+        connection: Connection,
+        reach: OpenTunnel,
+        database: String,
+        namedTables: [String],
+        historyRequest: PullRequest,
+        failAs: PullError
+    ) async throws -> [String] {
+        if namedTables.isEmpty == false {
+            return namedTables
+        }
+
+        let listingFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("umpadumpa-tables-\(UUID().uuidString).txt")
+            .path
+        do {
+            try await processes.run(
+                try command(
+                    tool: .mysql,
+                    connection: connection,
+                    host: reach.localHost,
+                    port: reach.localPort,
+                    database: database,
+                    extra: ["-N", "-e", "SHOW TABLES"],
+                    outputPath: listingFile,
+                    inputPath: nil
+                )
+            )
+        } catch {
+            let entry = makeHistory(request: historyRequest, succeeded: false)
+            rememberPull(entry, request: historyRequest)
+            report(.failed)
+            throw failAs
+        }
+
+        let listing = (try? String(contentsOfFile: listingFile, encoding: .utf8)) ?? ""
+        return tableNames(fromListing: listing)
+    }
+
+    private func tableNames(fromListing listing: String) -> [String] {
+        let hidden = ["mysql", "information_schema", "performance_schema", "sys"]
+        var names: [String] = []
+        for line in listing.split(separator: "\n") {
+            let name = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            if name.isEmpty {
+                continue
+            }
+            if name.hasPrefix("Tables_in_") {
+                continue
+            }
+            if hidden.contains(name) {
+                continue
+            }
+            names.append(name)
+        }
+        return names
+    }
+
+    private static func tableNameFromVerboseDumpLine(_ line: String) -> String? {
+        guard let marker = line.range(of: "for table ") else {
+            return nil
+        }
+        var rest = String(line[marker.upperBound...])
+        rest = rest.replacingOccurrences(of: "`", with: "")
+        rest = rest.replacingOccurrences(of: "...", with: "")
+        rest = rest.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = rest.split(whereSeparator: { $0 == " " || $0 == "." }).first.map(String.init) ?? ""
+        if name.isEmpty {
+            return nil
+        }
+        return name
+    }
+
+    private static func dumpFileMegabytes(at path: String) -> Int? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attributes[.size] as? NSNumber else {
+            return nil
+        }
+        let megabytes = size.intValue / 1_000_000
+        if megabytes < 1 {
+            return nil
+        }
+        return megabytes
     }
 
     private func rememberPull(_ entry: HistoryEntry, request: PullRequest) {

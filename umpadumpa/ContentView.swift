@@ -851,7 +851,7 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text(pullPhaseText)
+                    Text(pullStatusText)
                         .font(.system(size: 13))
                         .foregroundStyle(Color(red: 0.12, green: 0.14, blue: 0.20))
                 }
@@ -878,14 +878,25 @@ struct ContentView: View {
         }
     }
 
-    private var pullPhaseText: String {
-        if model.pullPhase == .creatingBackup {
-            return "Creating Backup…"
-        }
-        if model.pullPhase == .importingDestination {
+    private var pullStatusText: String {
+        let progress = model.pullProgress
+        if progress.phase == .importingDestination {
             return "Importing destination…"
         }
-        return "Dumping source…"
+
+        var text = "Dumping source…"
+        if progress.phase == .creatingBackup {
+            text = "Creating Backup…"
+        }
+        if progress.phase == .dumpingSource || progress.phase == .creatingBackup {
+            if progress.tablesTotal > 0 {
+                text += " \(progress.tablesReached) of \(progress.tablesTotal) tables"
+            }
+            if let megabytes = progress.dumpFileMegabytes {
+                text += " · \(megabytes) MB"
+            }
+        }
+        return text
     }
 
     private var footerBar: some View {
@@ -1040,6 +1051,7 @@ struct ContentView: View {
         showConfirm = false
         model.pullError = nil
         model.pullPhase = .dumpingSource
+        model.pullProgress = PullProgress(phase: .dumpingSource, tablesReached: 0, tablesTotal: 0, dumpFileMegabytes: nil)
         model.isPulling = true
         Task {
             defer { model.isPulling = false }
@@ -1048,6 +1060,12 @@ struct ContentView: View {
                 model.pullError = nil
                 model.pullPhase = .succeeded
                 model.refreshHistory()
+                Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    if model.pullPhase == .succeeded {
+                        model.pullPhase = .idle
+                    }
+                }
             } catch PullError.alreadyRunning {
                 model.pullPhase = .failed
                 model.pullError = "A Pull is already running."

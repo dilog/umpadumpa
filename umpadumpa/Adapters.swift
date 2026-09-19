@@ -65,11 +65,11 @@ nonisolated final class MemoryHistoryStore: HistoryStoring {
 nonisolated final class MemoryLastRecipeStore: LastRecipeStoring {
     private var ids: [UUID: UUID] = [:]
 
-    func record(recipeId: UUID, forSourceConnectionId connectionId: UUID) {
+    nonisolated func record(recipeId: UUID, forSourceConnectionId connectionId: UUID) {
         ids[connectionId] = recipeId
     }
 
-    func lastRecipeId(forSourceConnectionId connectionId: UUID) -> UUID? {
+    nonisolated func lastRecipeId(forSourceConnectionId connectionId: UUID) -> UUID? {
         ids[connectionId]
     }
 }
@@ -283,11 +283,11 @@ nonisolated final class DiskLastRecipeStore: LastRecipeStoring {
         self.disk = disk
     }
 
-    func record(recipeId: UUID, forSourceConnectionId connectionId: UUID) {
+    nonisolated func record(recipeId: UUID, forSourceConnectionId connectionId: UUID) {
         disk.recordLastRecipe(id: recipeId, forSourceConnectionId: connectionId)
     }
 
-    func lastRecipeId(forSourceConnectionId connectionId: UUID) -> UUID? {
+    nonisolated func lastRecipeId(forSourceConnectionId connectionId: UUID) -> UUID? {
         disk.lastRecipeId(forSourceConnectionId: connectionId)
     }
 }
@@ -457,7 +457,10 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
         dumpHoldContinuation = nil
     }
 
-    func run(_ command: ExternalCommand) async throws {
+    func run(
+        _ command: ExternalCommand,
+        onStandardErrorLine: (@Sendable (String) -> Void)?
+    ) async throws {
         invocations.append(command)
 
         if command.tool == .mysqldump {
@@ -487,6 +490,7 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
             }
             var sql = ""
             for table in tables {
+                onStandardErrorLine?("-- Retrieving table structure for table \(table)...")
                 sql += "DROP TABLE IF EXISTS \(table);\n"
                 sql += "CREATE TABLE \(table);\n"
             }
@@ -511,6 +515,15 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
                         var lines = ["Database"]
                         lines.append(contentsOf: tablesByDatabase.keys.sorted())
                         try lines.joined(separator: "\n").write(toFile: outputPath, atomically: true, encoding: .utf8)
+                    }
+                    return
+                }
+
+                if sql.contains("SHOW TABLES") {
+                    if let outputPath = command.outputPath {
+                        let database = command.arguments.last ?? ""
+                        let tables = (tablesByDatabase[database] ?? []).sorted()
+                        try tables.joined(separator: "\n").write(toFile: outputPath, atomically: true, encoding: .utf8)
                     }
                     return
                 }
@@ -739,11 +752,14 @@ nonisolated final class RealSSHTunnel: SSHTunneling {
 }
 
 nonisolated final class RealProcessRunner: ProcessRunning {
-    func run(_ command: ExternalCommand) async throws {
+    func run(
+        _ command: ExternalCommand,
+        onStandardErrorLine: (@Sendable (String) -> Void)?
+    ) async throws {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    try self.launch(command)
+                    try self.launch(command, onStandardErrorLine: onStandardErrorLine)
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -752,7 +768,10 @@ nonisolated final class RealProcessRunner: ProcessRunning {
         }
     }
 
-    private func launch(_ command: ExternalCommand) throws {
+    private func launch(
+        _ command: ExternalCommand,
+        onStandardErrorLine: (@Sendable (String) -> Void)?
+    ) throws {
         let process = Process()
         if command.executable.hasPrefix("/") {
             process.executableURL = URL(fileURLWithPath: command.executable)
@@ -780,13 +799,46 @@ nonisolated final class RealProcessRunner: ProcessRunning {
         let errorPipe = Pipe()
         process.standardError = errorPipe
 
+        var errorText = ""
+        var leftover = ""
+        let lock = NSLock()
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                return
+            }
+            guard let chunk = String(data: data, encoding: .utf8) else {
+                return
+            }
+            lock.lock()
+            errorText += chunk
+            leftover += chunk
+            let parts = leftover.split(separator: "\n", omittingEmptySubsequences: false)
+            leftover = String(parts.last ?? "")
+            let completeLines = parts.dropLast().map(String.init)
+            lock.unlock()
+            for line in completeLines {
+                onStandardErrorLine?(line)
+            }
+        }
+
         try process.run()
         process.waitUntilExit()
+        errorPipe.fileHandleForReading.readabilityHandler = nil
+
+        lock.lock()
+        let remaining = leftover
+        leftover = ""
+        if remaining.isEmpty == false {
+            errorText += remaining
+        }
+        let detail = errorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        lock.unlock()
+        if remaining.isEmpty == false {
+            onStandardErrorLine?(remaining)
+        }
 
         if process.terminationStatus != 0 {
-            let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let detail = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if command.tool == .mysqldump {
                 throw PullError.dumpFailed(detail)
             }
