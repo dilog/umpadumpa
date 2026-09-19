@@ -895,4 +895,73 @@ final class RecipeStoreTests: XCTestCase {
         disk.deleteRecipe(id: copy.id)
         XCTAssertEqual(disk.loadRecipes(), [recipe])
     }
+
+    func testHistoryAppendKeepsOnlyTheNewest100Rows() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let disk = DiskStore(folder: folder)
+        let history = DiskHistoryStore(disk: disk)
+
+        for n in 1...101 {
+            history.append(
+                HistoryEntry(
+                    id: UUID(),
+                    when: Date(timeIntervalSince1970: TimeInterval(n)),
+                    source: "Prod / shop",
+                    destination: "Localhost / local_shop",
+                    succeeded: true
+                )
+            )
+        }
+
+        XCTAssertEqual(history.entries.count, 100)
+        XCTAssertEqual(history.entries.first?.when, Date(timeIntervalSince1970: 2))
+        XCTAssertEqual(history.entries.last?.when, Date(timeIntervalSince1970: 101))
+        XCTAssertEqual(disk.loadHistory().count, 100)
+        XCTAssertEqual(disk.loadHistory().first?.when, Date(timeIntervalSince1970: 2))
+        XCTAssertEqual(disk.loadHistory().last?.when, Date(timeIntervalSince1970: 101))
+    }
+
+    func testClearHistoryEmptiesTheLogAndDisk() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let disk = DiskStore(folder: folder)
+        let history = DiskHistoryStore(disk: disk)
+        history.append(
+            HistoryEntry(
+                id: UUID(),
+                when: Date(timeIntervalSince1970: 1),
+                source: "Prod / shop",
+                destination: "Localhost / local_shop",
+                succeeded: true
+            )
+        )
+
+        history.clear()
+
+        XCTAssertTrue(history.entries.isEmpty)
+        XCTAssertTrue(disk.loadHistory().isEmpty)
+    }
+
+    func testPullAppendAlsoCapsHistoryAt100() async throws {
+        for n in 1...100 {
+            history.append(
+                HistoryEntry(
+                    id: UUID(),
+                    when: Date(timeIntervalSince1970: TimeInterval(n)),
+                    source: "old / db",
+                    destination: "old / dest",
+                    succeeded: true
+                )
+            )
+        }
+
+        let summary = engine.confirm(request())
+        _ = try await engine.run(summary)
+
+        XCTAssertEqual(history.entries.count, 100)
+        XCTAssertEqual(history.entries.first?.source, "old / db")
+        XCTAssertEqual(history.entries.first?.when, Date(timeIntervalSince1970: 2))
+        XCTAssertEqual(history.entries.last?.source, "Prod / shop")
+    }
 }
