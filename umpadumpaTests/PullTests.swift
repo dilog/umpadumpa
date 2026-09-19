@@ -145,6 +145,34 @@ final class PullTests: XCTestCase {
         XCTAssertFalse(destDump!.arguments.contains("users"))
     }
 
+    func testSourceDumpAsksMySQLClientForProtocolCompression() async throws {
+        _ = try await engine.run(engine.confirm(request()))
+
+        let dump = processes.invocations.first { command in
+            command.tool == .mysqldump && command.arguments.contains("shop")
+        }
+        XCTAssertNotNil(dump)
+        XCTAssertTrue(dump!.arguments.contains("--compression-algorithms=zstd,zlib,uncompressed"))
+        XCTAssertFalse(dump!.arguments.contains("--compress"))
+        XCTAssertFalse(dump!.arguments.contains { $0.localizedCaseInsensitiveContains("gzip") })
+        XCTAssertEqual((dump!.outputPath as NSString?)?.pathExtension, "sql")
+    }
+
+    func testBackupDumpAsksMySQLClientForTheSameProtocolCompression() async throws {
+        var pull = request()
+        pull.strategy = .backupThenReplace
+        _ = try await engine.run(engine.confirm(pull))
+
+        let destDump = processes.invocations.first { command in
+            command.tool == .mysqldump && command.arguments.contains("local_shop")
+        }
+        XCTAssertNotNil(destDump)
+        XCTAssertTrue(destDump!.arguments.contains("--compression-algorithms=zstd,zlib,uncompressed"))
+        XCTAssertFalse(destDump!.arguments.contains("--compress"))
+        XCTAssertFalse(destDump!.arguments.contains { $0.localizedCaseInsensitiveContains("gzip") })
+        XCTAssertEqual((destDump!.outputPath as NSString?)?.pathExtension, "sql")
+    }
+
     func testBackupThenReplaceReportsDumpBackupImportThenSucceeded() async throws {
         var phases: [PullPhase] = []
         let lock = NSLock()
