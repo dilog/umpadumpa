@@ -11,6 +11,7 @@ nonisolated final class PullEngine {
     private let lock = NSLock()
 
     private(set) var isRunning = false
+    var onPhase: (@Sendable (PullPhase) -> Void)?
 
     init(
         secrets: SecretStoring,
@@ -78,8 +79,10 @@ nonisolated final class PullEngine {
         }
         isRunning = true
         lock.unlock()
+        report(.dumpingSource)
 
         defer {
+            tunnels.closeOpenedTunnels()
             lock.lock()
             isRunning = false
             lock.unlock()
@@ -108,6 +111,7 @@ nonisolated final class PullEngine {
         } catch {
             let entry = makeHistory(request: request, succeeded: false)
             history.append(entry)
+            report(.failed)
             throw error
         }
 
@@ -129,6 +133,7 @@ nonisolated final class PullEngine {
                 historyRequest: request
             )
             if names.contains(reservedName) {
+                report(.failed)
                 throw PullError.nameAlreadyExists
             }
         }
@@ -149,10 +154,16 @@ nonisolated final class PullEngine {
                     inputPath: nil
                 )
             )
+        } catch let PullError.dumpFailed(detail) {
+            let entry = makeHistory(request: request, succeeded: false)
+            history.append(entry)
+            report(.failed)
+            throw PullError.dumpFailed(detail)
         } catch {
             let entry = makeHistory(request: request, succeeded: false)
             history.append(entry)
-            throw PullError.dumpFailed
+            report(.failed)
+            throw PullError.dumpFailed(String(describing: error))
         }
 
         if destReach == nil {
@@ -161,6 +172,7 @@ nonisolated final class PullEngine {
             } catch {
                 let entry = makeHistory(request: request, succeeded: false)
                 history.append(entry)
+                report(.failed)
                 throw PullError.tunnelFailed
             }
         }
@@ -169,6 +181,7 @@ nonisolated final class PullEngine {
 
         do {
             if request.strategy == .backupThenReplace {
+                report(.creatingBackup)
                 let backupFile = FileManager.default.temporaryDirectory
                     .appendingPathComponent("umpadumpa-backup-\(UUID().uuidString).sql")
                     .path
@@ -209,6 +222,8 @@ nonisolated final class PullEngine {
                     )
                 )
             }
+
+            report(.importingDestination)
 
             if request.strategy == .createNew {
                 try await processes.run(
@@ -265,11 +280,13 @@ nonisolated final class PullEngine {
         } catch {
             let entry = makeHistory(request: request, succeeded: false)
             history.append(entry)
+            report(.failed)
             throw PullError.importFailed
         }
 
         let entry = makeHistory(request: request, succeeded: true)
         history.append(entry)
+        report(.succeeded)
         return entry
     }
 
@@ -279,6 +296,7 @@ nonisolated final class PullEngine {
         } catch {
             let entry = makeHistory(request: historyRequest, succeeded: false)
             history.append(entry)
+            report(.failed)
             throw PullError.tunnelFailed
         }
     }
@@ -343,6 +361,7 @@ nonisolated final class PullEngine {
         } catch {
             let entry = makeHistory(request: historyRequest, succeeded: false)
             history.append(entry)
+            report(.failed)
             throw PullError.importFailed
         }
 
@@ -369,6 +388,10 @@ nonisolated final class PullEngine {
             environment["MYSQL_PWD"] = password
         }
         return environment
+    }
+
+    private func report(_ phase: PullPhase) {
+        onPhase?(phase)
     }
 
     private func makeHistory(request: PullRequest, succeeded: Bool) -> HistoryEntry {

@@ -31,6 +31,12 @@ nonisolated final class MemorySecretStore: SecretStoring {
     func sshPassphrase(forConnectionId id: UUID) -> String? {
         sshPassphrases[id]
     }
+
+    func deleteSecrets(forConnectionId id: UUID) {
+        passwords[id] = nil
+        sshPasswords[id] = nil
+        sshPassphrases[id] = nil
+    }
 }
 
 struct FixedClock: Clock {
@@ -113,9 +119,25 @@ nonisolated final class DiskStore {
         } else {
             all.append(connection)
         }
-        if let data = try? JSONEncoder().encode(all) {
+        saveConnections(all)
+    }
+
+    func saveConnections(_ connections: [Connection]) {
+        if let data = try? JSONEncoder().encode(connections) {
             try? data.write(to: connectionsFile)
         }
+    }
+
+    func deleteConnection(id: UUID, secrets: SecretStoring) {
+        var connections = loadConnections()
+        connections.removeAll { $0.id == id }
+        saveConnections(connections)
+
+        var recipes = loadRecipes()
+        recipes.removeAll { $0.sourceConnectionId == id }
+        saveRecipes(recipes)
+
+        secrets.deleteSecrets(forConnectionId: id)
     }
 
     func loadHistory() -> [HistoryEntry] {
@@ -208,6 +230,8 @@ nonisolated final class DiskSettingsStore: SettingsStoring {
 #if os(macOS)
 nonisolated final class KeychainSecretStore: SecretStoring {
     private let service = "dev.umpadumpa.connection"
+    private let lock = NSLock()
+    private var cache: [String: String] = [:]
 
     func setPassword(_ password: String, forConnectionId id: UUID) {
         setSecret(password, account: id.uuidString)
@@ -233,7 +257,30 @@ nonisolated final class KeychainSecretStore: SecretStoring {
         secret(account: id.uuidString + "-ssh-passphrase")
     }
 
+    func deleteSecrets(forConnectionId id: UUID) {
+        deleteSecret(account: id.uuidString)
+        deleteSecret(account: id.uuidString + "-ssh-password")
+        deleteSecret(account: id.uuidString + "-ssh-passphrase")
+    }
+
+    private func deleteSecret(account: String) {
+        lock.lock()
+        cache[account] = nil
+        lock.unlock()
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
     private func setSecret(_ value: String, account: String) {
+        lock.lock()
+        cache[account] = value
+        lock.unlock()
+
         let data = Data(value.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -248,6 +295,13 @@ nonisolated final class KeychainSecretStore: SecretStoring {
     }
 
     private func secret(account: String) -> String? {
+        lock.lock()
+        if let cached = cache[account] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -261,7 +315,13 @@ nonisolated final class KeychainSecretStore: SecretStoring {
         guard status == errSecSuccess, let data = item as? Data else {
             return nil
         }
-        return String(data: data, encoding: .utf8)
+        let value = String(data: data, encoding: .utf8)
+        if let value {
+            lock.lock()
+            cache[account] = value
+            lock.unlock()
+        }
+        return value
     }
 }
 #endif
@@ -271,6 +331,7 @@ nonisolated final class FakeSSHTunnel: SSHTunneling {
     var localPort = 61000
     var failOpen = false
     private(set) var openedFor: [Connection] = []
+    private(set) var closeCount = 0
 
     func openTunnel(for connection: Connection) async throws -> OpenTunnel {
         openedFor.append(connection)
@@ -278,6 +339,10 @@ nonisolated final class FakeSSHTunnel: SSHTunneling {
             throw PullError.tunnelFailed
         }
         return OpenTunnel(localHost: localHost, localPort: localPort)
+    }
+
+    func closeOpenedTunnels() {
+        closeCount += 1
     }
 }
 
@@ -328,7 +393,7 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
             }
 
             if failDump {
-                throw PullError.dumpFailed
+                throw PullError.dumpFailed("dump failed")
             }
 
             let target = dumpTarget(from: command.arguments)
@@ -502,6 +567,15 @@ nonisolated final class RealSSHTunnel: SSHTunneling {
         return OpenTunnel(localHost: "127.0.0.1", localPort: localPort)
     }
 
+    func closeOpenedTunnels() {
+        for process in running {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+        running = []
+    }
+
     private func unusedLocalPort() throws -> Int {
         let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard socket >= 0 else {
@@ -629,8 +703,11 @@ nonisolated final class RealProcessRunner: ProcessRunning {
         process.waitUntilExit()
 
         if process.terminationStatus != 0 {
+            let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let detail = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if command.tool == .mysqldump {
-                throw PullError.dumpFailed
+                throw PullError.dumpFailed(detail)
             }
             throw PullError.importFailed
         }

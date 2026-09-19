@@ -142,6 +142,26 @@ final class PullTests: XCTestCase {
         XCTAssertFalse(destDump!.arguments.contains("users"))
     }
 
+    func testBackupThenReplaceReportsDumpBackupImportThenSucceeded() async throws {
+        var phases: [PullPhase] = []
+        let lock = NSLock()
+        engine.onPhase = { phase in
+            lock.lock()
+            phases.append(phase)
+            lock.unlock()
+        }
+
+        var pull = request()
+        pull.strategy = .backupThenReplace
+        let summary = engine.confirm(pull)
+        _ = try await engine.run(summary)
+
+        XCTAssertEqual(
+            phases,
+            [.dumpingSource, .creatingBackup, .importingDestination, .succeeded]
+        )
+    }
+
     func testBackupThenReplaceDropDatabaseCopiesDestinationThenDrops() async throws {
         var pull = request()
         pull.strategy = .backupThenReplace
@@ -271,7 +291,7 @@ final class PullTests: XCTestCase {
         do {
             _ = try await engine.run(summary)
             XCTFail("expected dump failure")
-        } catch PullError.dumpFailed {
+        } catch PullError.dumpFailed(_) {
             // expected
         } catch {
             XCTFail("wrong error \(error)")
@@ -283,6 +303,28 @@ final class PullTests: XCTestCase {
         XCTAssertEqual(history.entries[0].succeeded, false)
         XCTAssertEqual(history.entries[0].source, "Prod / shop")
         XCTAssertEqual(history.entries[0].destination, "Localhost / local_shop")
+        XCTAssertEqual(tunnels.closeCount, 1)
+    }
+
+    func testSSHTunnelsAreClosedWhenDumpFails() async {
+        var pull = request()
+        pull.sourceConnection.usesSSH = true
+        pull.sourceConnection.sshHost = "bastion.example"
+        pull.sourceConnection.sshUser = "jump"
+        processes.failDump = true
+
+        do {
+            _ = try await engine.run(engine.confirm(pull))
+            XCTFail("expected dump failure")
+        } catch PullError.dumpFailed(_) {
+            // expected
+        } catch {
+            XCTFail("wrong error \(error)")
+        }
+
+        XCTAssertEqual(processes.invocations.map(\.tool), [.mysqldump])
+        XCTAssertEqual(tunnels.openedFor.count, 1)
+        XCTAssertEqual(tunnels.closeCount, 1)
     }
 
     func testSecondPullIsRefusedWhileOneIsRunning() async throws {
@@ -438,6 +480,7 @@ final class PullTests: XCTestCase {
         XCTAssertTrue(dump.arguments.contains("61000"))
         XCTAssertFalse(dump.arguments.contains("prod.example"))
         XCTAssertEqual(processes.invocations.map(\.tool), [.mysqldump, .mysql])
+        XCTAssertEqual(tunnels.closeCount, 1)
     }
 
     func testSSHDestinationImportUsesTunnelAddress() async throws {
@@ -453,6 +496,7 @@ final class PullTests: XCTestCase {
         XCTAssertEqual(mysql?.tool, .mysql)
         XCTAssertTrue(mysql?.arguments.contains("127.0.0.1") == true)
         XCTAssertTrue(mysql?.arguments.contains("62000") == true)
+        XCTAssertEqual(tunnels.closeCount, 1)
     }
 
     func testTunnelFailureRecordsFailedHistoryAndDoesNotTouchDestination() async {
@@ -475,6 +519,7 @@ final class PullTests: XCTestCase {
         XCTAssertEqual(processes.tablesByDatabase["local_shop"], ["users", "scratch_notes"])
         XCTAssertEqual(history.entries.count, 1)
         XCTAssertEqual(history.entries[0].succeeded, false)
+        XCTAssertEqual(tunnels.closeCount, 1)
     }
 
     func testDirectConnectionStillUsesMySQLHostAndPort() async throws {
@@ -499,6 +544,7 @@ final class PullTests: XCTestCase {
         XCTAssertEqual(tunnels.openedFor.count, 1)
         XCTAssertEqual(tunnels.openedFor[0].sshAuthMethod, .privateKey)
         XCTAssertEqual(tunnels.openedFor[0].sshKeyPath, "/Users/me/keys/prod.pem")
+        XCTAssertEqual(tunnels.closeCount, 1)
     }
 
     func testEmptySettingsUsePathClientNames() async throws {
@@ -633,6 +679,88 @@ final class ConnectionStoreTests: XCTestCase {
         XCTAssertEqual(loaded, [connection])
         XCTAssertEqual(secrets.sshPassword(forConnectionId: connection.id), "ssh-secret")
         XCTAssertEqual(secrets.sshPassphrase(forConnectionId: connection.id), "pem-phrase")
+    }
+
+    func testDeletingAConnectionRemovesItSecretsAndSourceRecipesButLeavesHistoryAndDestinationRecipes() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let secrets = MemorySecretStore()
+        let disk = DiskStore(folder: folder)
+        let history = DiskHistoryStore(disk: disk)
+
+        let source = Connection(id: UUID(), name: "Prod", host: "prod.example", port: 3306, user: "dump")
+        let other = Connection(id: UUID(), name: "Localhost", host: "127.0.0.1", port: 3306, user: "root")
+        disk.saveConnection(source)
+        disk.saveConnection(other)
+        secrets.setPassword("prod-pass", forConnectionId: source.id)
+        secrets.setSSHPassword("ssh-pass", forConnectionId: source.id)
+        secrets.setSSHPassphrase("key-phrase", forConnectionId: source.id)
+        secrets.setPassword("local-pass", forConnectionId: other.id)
+
+        let sourceRecipe = Recipe(
+            id: UUID(),
+            title: "Prod daily",
+            sourceConnectionId: source.id,
+            sourceDatabase: "shop",
+            destinationConnectionId: other.id,
+            destinationDatabase: "local_shop",
+            strategy: .replace,
+            replaceMode: .importInPlace,
+            tables: []
+        )
+        let destinationOnlyRecipe = Recipe(
+            id: UUID(),
+            title: "Local daily",
+            sourceConnectionId: other.id,
+            sourceDatabase: "local_shop",
+            destinationConnectionId: source.id,
+            destinationDatabase: "shop_copy",
+            strategy: .replace,
+            replaceMode: .importInPlace,
+            tables: []
+        )
+        disk.saveRecipe(sourceRecipe)
+        disk.saveRecipe(destinationOnlyRecipe)
+
+        let historyRow = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 1_000_000),
+            source: "Prod / shop",
+            destination: "Localhost / local_shop",
+            succeeded: true
+        )
+        history.append(historyRow)
+
+        disk.deleteConnection(id: source.id, secrets: secrets)
+
+        XCTAssertEqual(disk.loadConnections().map(\.id), [other.id])
+        XCTAssertNil(secrets.password(forConnectionId: source.id))
+        XCTAssertNil(secrets.sshPassword(forConnectionId: source.id))
+        XCTAssertNil(secrets.sshPassphrase(forConnectionId: source.id))
+        XCTAssertEqual(secrets.password(forConnectionId: other.id), "local-pass")
+        XCTAssertEqual(disk.loadRecipes(), [destinationOnlyRecipe])
+        XCTAssertEqual(history.entries, [historyRow])
+        XCTAssertEqual(disk.loadHistory(), [historyRow])
+    }
+
+    func testSavedConnectionOrderIsKeptAndNewConnectionIsAppended() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let store = DiskStore(folder: folder)
+
+        let first = Connection(id: UUID(), name: "Prod", host: "prod.example", port: 3306, user: "dump")
+        let second = Connection(id: UUID(), name: "Staging", host: "staging.example", port: 3306, user: "dump")
+        let third = Connection(id: UUID(), name: "Localhost", host: "127.0.0.1", port: 3306, user: "root")
+        store.saveConnection(first)
+        store.saveConnection(second)
+        store.saveConnection(third)
+
+        store.saveConnections([third, first, second])
+        XCTAssertEqual(store.loadConnections().map(\.id), [third.id, first.id, second.id])
+
+        let appended = Connection(id: UUID(), name: "New box", host: "new.example", port: 3306, user: "dump")
+        store.saveConnection(appended)
+        XCTAssertEqual(store.loadConnections().map(\.id), [third.id, first.id, second.id, appended.id])
     }
 }
 

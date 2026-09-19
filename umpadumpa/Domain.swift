@@ -154,11 +154,20 @@ struct HistoryEntry: Identifiable, Codable, Equatable {
 
 enum PullError: Error, Equatable {
     case alreadyRunning
-    case dumpFailed
+    case dumpFailed(String)
     case importFailed
     case tunnelFailed
     case missingClient(ClientTool)
     case nameAlreadyExists
+}
+
+enum PullPhase: Equatable {
+    case idle
+    case dumpingSource
+    case creatingBackup
+    case importingDestination
+    case succeeded
+    case failed
 }
 
 enum ClientTool: Equatable {
@@ -189,6 +198,7 @@ protocol SecretStoring: AnyObject {
     func sshPassword(forConnectionId id: UUID) -> String?
     func setSSHPassphrase(_ passphrase: String, forConnectionId id: UUID)
     func sshPassphrase(forConnectionId id: UUID) -> String?
+    func deleteSecrets(forConnectionId id: UUID)
 }
 
 protocol Clock {
@@ -201,6 +211,7 @@ protocol ProcessRunning: AnyObject {
 
 protocol SSHTunneling: AnyObject {
     func openTunnel(for connection: Connection) async throws -> OpenTunnel
+    func closeOpenedTunnels()
 }
 
 protocol HistoryStoring: AnyObject {

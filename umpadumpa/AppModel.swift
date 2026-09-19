@@ -21,6 +21,7 @@ final class AppModel {
     var showNewConnection = false
     var pullError: String?
     var isPulling = false
+    var pullPhase: PullPhase = .idle
 
     var newName = ""
     var newHost = ""
@@ -63,6 +64,11 @@ final class AppModel {
             settings: settingsStore,
             paths: FilePathChecker()
         )
+        self.engine.onPhase = { [weak self] phase in
+            Task { @MainActor in
+                self?.pullPhase = phase
+            }
+        }
         self.connections = disk.loadConnections()
         self.recipes = disk.loadRecipes()
         self.history = historyStore.entries
@@ -152,6 +158,24 @@ final class AppModel {
         return connection
     }
 
+    func deleteConnection(id: UUID) {
+        disk.deleteConnection(id: id, secrets: secrets)
+        connections = disk.loadConnections()
+        recipes = disk.loadRecipes()
+        if selectedConnection == nil {
+            selectedNav = connections.first?.id.uuidString ?? ""
+        }
+        if destinationConnectionId == id {
+            destinationConnectionId = connections.first { $0.name.lowercased() == "localhost" }?.id
+                ?? connections.first?.id
+        }
+    }
+
+    func moveConnections(fromOffsets: IndexSet, toOffset: Int) {
+        connections.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        disk.saveConnections(connections)
+    }
+
     func selectConnection(_ id: String) {
         selectedNav = id
         if let connection = selectedConnection {
@@ -204,8 +228,9 @@ final class AppModel {
             } catch PullError.alreadyRunning {
                 pullError = "A Pull is already running."
                 refreshHistory()
-            } catch PullError.dumpFailed {
-                pullError = "Dump failed. Destination was not changed."
+            } catch let PullError.dumpFailed(detail) {
+                let extra = detail.isEmpty ? "" : " \(detail)"
+                pullError = "Dump failed. Destination was not changed.\(extra)"
                 refreshHistory()
             } catch PullError.tunnelFailed {
                 pullError = "SSH tunnel failed. Destination was not changed."

@@ -256,7 +256,7 @@ struct ContentView: View {
             }
         } message: {
             if let connection = connectionToDelete {
-                Text("This removes \(connection.name), its saved passwords, and Recipes that use it as source. History is not changed.")
+                Text("This removes \(connection.name), its Keychain secrets, and Recipes that use it as source. History is not changed.")
             }
         }
     }
