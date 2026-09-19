@@ -27,6 +27,9 @@ final class AppModel {
     var databaseNamesByConnectionId: [UUID: [String]] = [:]
     var databaseListErrorByConnectionId: [UUID: String] = [:]
     var loadingDatabaseConnectionId: UUID?
+    var liveTableNames: [String] = []
+    var tableListError: String?
+    var isLoadingTables = false
     private var listingChain: Task<Void, Never> = Task {}
 
     var newName = ""
@@ -295,7 +298,47 @@ final class AppModel {
         }
     }
 
-    private func listingErrorMessage(_ error: Error) -> String {
+    func loadTables(for connection: Connection, database: String) {
+        if database.isEmpty {
+            return
+        }
+        listingChain = Task { [listingChain] in
+            await listingChain.value
+            await listTablesNow(for: connection, database: database)
+        }
+    }
+
+    private func listTablesNow(for connection: Connection, database: String) async {
+        if isPulling || engine.isRunning {
+            await MainActor.run {
+                tableListError = "A Pull is already running."
+            }
+            return
+        }
+
+        await MainActor.run {
+            isLoadingTables = true
+            tableListError = nil
+            liveTableNames = []
+        }
+
+        do {
+            let names = try await engine.listTables(on: connection, database: database)
+            await MainActor.run {
+                liveTableNames = names
+                tableListError = nil
+                isLoadingTables = false
+            }
+        } catch {
+            await MainActor.run {
+                isLoadingTables = false
+                liveTableNames = []
+                tableListError = listingErrorMessage(error, forTables: true)
+            }
+        }
+    }
+
+    private func listingErrorMessage(_ error: Error, forTables: Bool = false) -> String {
         if let pullError = error as? PullError {
             if pullError == .alreadyRunning {
                 return "A Pull is already running."
@@ -307,10 +350,10 @@ final class AppModel {
                 return "mysql was not found. Set its path in Settings."
             }
             if pullError == .listingFailed {
-                return "Could not list Databases."
+                return forTables ? "Could not list Tables." : "Could not list Databases."
             }
         }
-        return "Could not list Databases."
+        return forTables ? "Could not list Tables." : "Could not list Databases."
     }
 
     func runConfirmedPull() {

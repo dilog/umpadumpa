@@ -437,6 +437,7 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
     var failDump = false
     var failImport = false
     var failShowDatabases = false
+    var failShowTables = false
     var holdDump = false
     private var firstDumpOutputPath: String?
 
@@ -524,6 +525,9 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
                 }
 
                 if sql.contains("SHOW TABLES") {
+                    if failShowTables {
+                        throw PullError.listingFailed
+                    }
                     if let outputPath = command.outputPath {
                         let database = command.arguments.last ?? ""
                         let tables = (tablesByDatabase[database] ?? []).sorted()

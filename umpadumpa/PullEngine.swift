@@ -348,6 +348,45 @@ nonisolated final class PullEngine {
         return databaseNames(fromListing: listing)
     }
 
+    func listTables(on connection: Connection, database: String) async throws -> [String] {
+        lock.lock()
+        if isRunning {
+            lock.unlock()
+            throw PullError.alreadyRunning
+        }
+        lock.unlock()
+
+        defer {
+            tunnels.closeOpenedTunnels()
+        }
+
+        _ = try executable(for: .mysql)
+        let reach = try await openReachability(for: connection)
+        let listingFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("umpadumpa-tables-list-\(UUID().uuidString).txt")
+            .path
+
+        do {
+            try await processes.run(
+                try command(
+                    tool: .mysql,
+                    connection: connection,
+                    host: reach.localHost,
+                    port: reach.localPort,
+                    database: database,
+                    extra: ["-N", "-e", "SHOW TABLES"],
+                    outputPath: listingFile,
+                    inputPath: nil
+                )
+            )
+        } catch {
+            throw PullError.listingFailed
+        }
+
+        let listing = (try? String(contentsOfFile: listingFile, encoding: .utf8)) ?? ""
+        return tableNames(fromListing: listing, hideSystemDatabaseNames: false)
+    }
+
     private func reachability(for connection: Connection, historyRequest: PullRequest) async throws -> OpenTunnel {
         do {
             return try await openReachability(for: connection)
@@ -549,11 +588,10 @@ nonisolated final class PullEngine {
         }
 
         let listing = (try? String(contentsOfFile: listingFile, encoding: .utf8)) ?? ""
-        return tableNames(fromListing: listing)
+        return tableNames(fromListing: listing, hideSystemDatabaseNames: true)
     }
 
-    private func tableNames(fromListing listing: String) -> [String] {
-        let hidden = ["mysql", "information_schema", "performance_schema", "sys"]
+    private func tableNames(fromListing listing: String, hideSystemDatabaseNames: Bool) -> [String] {
         var names: [String] = []
         for line in listing.split(separator: "\n") {
             let name = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -563,7 +601,7 @@ nonisolated final class PullEngine {
             if name.hasPrefix("Tables_in_") {
                 continue
             }
-            if hidden.contains(name) {
+            if hideSystemDatabaseNames && SystemDatabases.names.contains(name) {
                 continue
             }
             names.append(name)

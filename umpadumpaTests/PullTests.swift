@@ -857,6 +857,92 @@ final class PullTests: XCTestCase {
         _ = try await first.value
     }
 
+    func testListTablesRunsShowTablesWithSecretsAndClosesTunnel() async throws {
+        processes.tablesByDatabase["shop"] = ["users", "orders", "active_users"]
+        var connection = source
+        connection.usesSSH = true
+        connection.sshHost = "bastion.example"
+        connection.sshUser = "jump"
+
+        let names = try await engine.listTables(on: connection, database: "shop")
+
+        XCTAssertEqual(names, ["active_users", "orders", "users"])
+        XCTAssertTrue(history.entries.isEmpty)
+
+        let listing = processes.invocations.first { command in
+            command.tool == .mysql && command.arguments.contains("SHOW TABLES")
+        }
+        XCTAssertEqual(listing?.executable, "mysql")
+        XCTAssertEqual(listing?.environment["MYSQL_PWD"], "src-secret")
+        XCTAssertTrue(listing?.arguments.contains("shop") == true)
+        XCTAssertEqual(tunnels.openedFor, [connection])
+        XCTAssertEqual(tunnels.closeCount, 1)
+    }
+
+    func testListTablesUsesConfiguredMysqlPath() async throws {
+        settings.save(
+            ClientSettings(
+                mysqldumpPath: "/opt/homebrew/bin/mysqldump",
+                mysqlPath: "/opt/homebrew/bin/mysql"
+            )
+        )
+
+        _ = try await engine.listTables(on: source, database: "shop")
+
+        let listing = processes.invocations.first { command in
+            command.tool == .mysql && command.arguments.contains("SHOW TABLES")
+        }
+        XCTAssertEqual(listing?.executable, "/opt/homebrew/bin/mysql")
+        XCTAssertTrue(history.entries.isEmpty)
+        XCTAssertEqual(tunnels.closeCount, 1)
+    }
+
+    func testListTablesFailureClosesTunnelAndDoesNotWriteHistory() async {
+        processes.failShowTables = true
+        var connection = source
+        connection.usesSSH = true
+        connection.sshHost = "bastion.example"
+        connection.sshUser = "jump"
+
+        do {
+            _ = try await engine.listTables(on: connection, database: "shop")
+            XCTFail("expected listing failure")
+        } catch PullError.listingFailed {
+            // expected
+        } catch {
+            XCTFail("wrong error \(error)")
+        }
+
+        XCTAssertTrue(history.entries.isEmpty)
+        XCTAssertEqual(tunnels.openedFor.count, 1)
+        XCTAssertEqual(tunnels.closeCount, 1)
+    }
+
+    func testListTablesIsRefusedWhileAPullIsRunning() async throws {
+        processes.holdDump = true
+        let summary = engine.confirm(request())
+        let first = Task {
+            try await engine.run(summary)
+        }
+        await processes.waitUntilDumpIsHeld()
+        let invocationsBeforeListing = processes.invocations.count
+
+        do {
+            _ = try await engine.listTables(on: source, database: "shop")
+            XCTFail("listing should be refused")
+        } catch PullError.alreadyRunning {
+            // expected
+        } catch {
+            XCTFail("wrong error \(error)")
+        }
+
+        XCTAssertEqual(processes.invocations.count, invocationsBeforeListing)
+        XCTAssertTrue(history.entries.isEmpty)
+
+        processes.releaseDump()
+        _ = try await first.value
+    }
+
     func testSystemDatabasesStayHiddenUnlessShown() {
         let names = ["shop", "mysql", "information_schema", "performance_schema", "sys", "local_shop"]
 
@@ -888,6 +974,16 @@ final class PullTests: XCTestCase {
 
         XCTAssertEqual(options.map(\.id), ["", "shop", "gone"])
         XCTAssertEqual(options.map(\.title), ["Choose a Database", "shop", "gone (absent)"])
+    }
+
+    func testTableChecklistKeepsMissingRecipeNamesCheckedAndMarkedAbsent() {
+        let options = TablePickerOptions.checklist(
+            liveNames: ["users", "orders"],
+            keptNames: ["users", "gone"]
+        )
+
+        XCTAssertEqual(options.map(\.id), ["users", "orders", "gone"])
+        XCTAssertEqual(options.map(\.title), ["users", "orders", "gone (absent)"])
     }
 
     func testStartDumpNeedsADestinationDatabaseWhenStrategyUsesAnExistingOne() {

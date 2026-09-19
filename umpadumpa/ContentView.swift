@@ -111,7 +111,16 @@ struct ContentView: View {
                 skipTableReset = false
                 return
             }
-            tableScope = "all"
+            if tableScope == "choose" {
+                selectedTableNames = []
+                if let recipe = selectedRecipe,
+                   recipe.tables.isEmpty == false,
+                   recipe.sourceDatabase == sourceDatabase {
+                    selectedTableNames = Set(recipe.tables)
+                }
+                loadTablesForSource()
+                return
+            }
             selectedTableNames = []
         }
         .onChange(of: destinationConnectionId) { _, id in
@@ -128,6 +137,7 @@ struct ContentView: View {
         .onChange(of: tableScope) { _, scope in
             if scope == "choose" {
                 replaceMode = ReplaceMode.importInPlace.rawValue
+                loadTablesForSource()
             }
         }
     }
@@ -195,25 +205,39 @@ struct ContentView: View {
         return "Backup and replace"
     }
 
-    private var tablesForSourceDatabase: [String] {
-        if sourceDatabase == "analytics" {
-            return ["events", "sessions", "funnels"]
+    private var selectedRecipe: Recipe? {
+        guard let uuid = UUID(uuidString: selectedRecipeId) else {
+            return nil
         }
-        if sourceDatabase == "voila" {
-            return ["clients", "payments", "invoices"]
+        return model.recipes.first { $0.id == uuid }
+    }
+
+    private var tableChecklist: [TablePickerOption] {
+        TablePickerOptions.checklist(
+            liveNames: model.liveTableNames,
+            keptNames: Array(selectedTableNames)
+        )
+    }
+
+    private func loadTablesForSource() {
+        guard let source = realSelectedConnection else {
+            return
         }
-        return ["users", "orders", "bookings", "invoices", "rooms", "permissions", "guests", "rates", "availability", "messages", "files", "logs"]
+        model.loadTables(for: source, database: sourceDatabase)
+    }
+
+    private var chosenTableNames: [String] {
+        tableChecklist.map(\.id).filter { selectedTableNames.contains($0) }
     }
 
     private var tablesSummary: String {
         if tableScope == "all" {
             return "All tables"
         }
-        let names = tablesForSourceDatabase.filter { selectedTableNames.contains($0) }
-        if names.isEmpty {
+        if chosenTableNames.isEmpty {
             return "No tables selected"
         }
-        return names.joined(separator: ", ")
+        return chosenTableNames.joined(separator: ", ")
     }
 
     private var pullDestinationName: String {
@@ -624,6 +648,7 @@ struct ContentView: View {
         } else {
             tableScope = "choose"
             selectedTableNames = Set(recipe.tables)
+            loadTablesForSource()
         }
     }
 
@@ -693,7 +718,7 @@ struct ContentView: View {
             return nil
         }
 
-        let chosenTables = tablesForSourceDatabase.filter { selectedTableNames.contains($0) }
+        let chosenTables = chosenTableNames
         if tableScope == "choose" && chosenTables.isEmpty {
             return nil
         }
@@ -820,20 +845,46 @@ struct ContentView: View {
             if tableScope == "choose" {
                 HStack(spacing: 12) {
                     Button("Check all") {
-                        selectedTableNames = Set(tablesForSourceDatabase)
+                        selectedTableNames = Set(tableChecklist.map(\.id))
                     }
                     Button("Uncheck all") {
                         selectedTableNames = []
                     }
+                    if model.isLoadingTables {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button(model.tableListError == nil ? "Refresh" : "Retry") {
+                        loadTablesForSource()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
+                    .disabled(model.isPulling)
                 }
                 .font(.system(size: 12))
                 .buttonStyle(.plain)
                 .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
 
+                if let listError = model.tableListError {
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(listError)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(red: 0.90, green: 0.30, blue: 0.30))
+                            .textSelection(.enabled)
+                        Button("Copy") {
+                            copyText(listError)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
+                    }
+                }
+
                 ScrollView {
                     VStack(alignment: .leading, spacing: 6) {
-                        ForEach(tablesForSourceDatabase, id: \.self) { tableName in
-                            Toggle(tableName, isOn: tableBinding(tableName))
+                        ForEach(tableChecklist, id: \.id) { option in
+                            Toggle(option.title, isOn: tableBinding(option.id))
                                 .font(.system(size: 12))
                                 #if os(macOS)
                                 .toggleStyle(.checkbox)
@@ -1095,7 +1146,7 @@ struct ContentView: View {
             return nil
         }
 
-        let chosenTables = tablesForSourceDatabase.filter { selectedTableNames.contains($0) }
+        let chosenTables = chosenTableNames
         if tableScope == "choose" && chosenTables.isEmpty {
             return nil
         }

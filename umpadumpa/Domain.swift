@@ -308,6 +308,33 @@ enum DatabasePickerOptions {
     }
 }
 
+struct TablePickerOption: Equatable {
+    var id: String
+    var title: String
+}
+
+enum TablePickerOptions {
+    static func checklist(liveNames: [String], keptNames: [String]) -> [TablePickerOption] {
+        var seen: Set<String> = []
+        var options: [TablePickerOption] = []
+        for name in liveNames {
+            if seen.contains(name) {
+                continue
+            }
+            seen.insert(name)
+            options.append(TablePickerOption(id: name, title: name))
+        }
+        for name in keptNames {
+            if seen.contains(name) {
+                continue
+            }
+            seen.insert(name)
+            options.append(TablePickerOption(id: name, title: "\(name) (absent)"))
+        }
+        return options
+    }
+}
+
 enum PullForm {
     static func canStartDump(
         sourceDatabase: String,
