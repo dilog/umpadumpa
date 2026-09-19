@@ -280,6 +280,51 @@ enum SystemDatabases {
     }
 }
 
+enum DatabaseListingSequence {
+    static func ordered(source: Connection, destination: Connection?) -> [Connection] {
+        if let destination, destination.id != source.id {
+            return [source, destination]
+        }
+        return [source]
+    }
+}
+
+struct DatabasePickerOption: Equatable {
+    var id: String
+    var title: String
+}
+
+enum DatabasePickerOptions {
+    static func menu(liveNames: [String], selected: String, showSystem: Bool) -> [DatabasePickerOption] {
+        let live = SystemDatabases.visible(liveNames, showSystem: showSystem)
+        var options = [DatabasePickerOption(id: "", title: "Choose a Database")]
+        for name in live {
+            options.append(DatabasePickerOption(id: name, title: name))
+        }
+        if selected.isEmpty == false && live.contains(selected) == false {
+            options.append(DatabasePickerOption(id: selected, title: "\(selected) (absent)"))
+        }
+        return options
+    }
+}
+
+enum PullForm {
+    static func canStartDump(
+        sourceDatabase: String,
+        strategy: Strategy,
+        destinationDatabase: String,
+        newDatabaseName: String
+    ) -> Bool {
+        if sourceDatabase.isEmpty {
+            return false
+        }
+        if strategy == .createNew {
+            return newDatabaseName.isEmpty == false
+        }
+        return destinationDatabase.isEmpty == false
+    }
+}
+
 enum BackupName {
     static func defaultName(database: String, at date: Date) -> String {
         let formatter = DateFormatter()

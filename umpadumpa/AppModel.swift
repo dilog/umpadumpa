@@ -27,6 +27,7 @@ final class AppModel {
     var databaseNamesByConnectionId: [UUID: [String]] = [:]
     var databaseListErrorByConnectionId: [UUID: String] = [:]
     var loadingDatabaseConnectionId: UUID?
+    private var listingChain: Task<Void, Never> = Task {}
 
     var newName = ""
     var newHost = ""
@@ -241,6 +242,26 @@ final class AppModel {
     }
 
     func loadDatabases(for connection: Connection, force: Bool) {
+        enqueueListings(DatabaseListingSequence.ordered(source: connection, destination: nil), force: force)
+    }
+
+    func loadSourceThenDestination(source: Connection, destination: Connection?, force: Bool) {
+        enqueueListings(
+            DatabaseListingSequence.ordered(source: source, destination: destination),
+            force: force
+        )
+    }
+
+    private func enqueueListings(_ connections: [Connection], force: Bool) {
+        listingChain = Task { [listingChain] in
+            await listingChain.value
+            for connection in connections {
+                await listDatabasesNow(for: connection, force: force)
+            }
+        }
+    }
+
+    private func listDatabasesNow(for connection: Connection, force: Bool) async {
         if isPulling || engine.isRunning {
             return
         }
@@ -250,25 +271,26 @@ final class AppModel {
             return
         }
 
-        loadingDatabaseConnectionId = connection.id
-        databaseListErrorByConnectionId[connection.id] = nil
-        Task {
-            do {
-                let names = try await engine.listDatabases(on: connection)
-                await MainActor.run {
-                    databaseNamesByConnectionId[connection.id] = names
-                    databaseListErrorByConnectionId[connection.id] = nil
-                    if loadingDatabaseConnectionId == connection.id {
-                        loadingDatabaseConnectionId = nil
-                    }
+        await MainActor.run {
+            loadingDatabaseConnectionId = connection.id
+            databaseListErrorByConnectionId[connection.id] = nil
+        }
+
+        do {
+            let names = try await engine.listDatabases(on: connection)
+            await MainActor.run {
+                databaseNamesByConnectionId[connection.id] = names
+                databaseListErrorByConnectionId[connection.id] = nil
+                if loadingDatabaseConnectionId == connection.id {
+                    loadingDatabaseConnectionId = nil
                 }
-            } catch {
-                await MainActor.run {
-                    if loadingDatabaseConnectionId == connection.id {
-                        loadingDatabaseConnectionId = nil
-                    }
-                    databaseListErrorByConnectionId[connection.id] = listingErrorMessage(error)
+            }
+        } catch {
+            await MainActor.run {
+                if loadingDatabaseConnectionId == connection.id {
+                    loadingDatabaseConnectionId = nil
                 }
+                databaseListErrorByConnectionId[connection.id] = listingErrorMessage(error)
             }
         }
     }

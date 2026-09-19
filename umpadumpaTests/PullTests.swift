@@ -866,6 +866,64 @@ final class PullTests: XCTestCase {
         )
         XCTAssertEqual(SystemDatabases.visible(names, showSystem: true), names)
     }
+
+    func testListingSequenceIsSourceThenDestination() {
+        let ordered = DatabaseListingSequence.ordered(source: source, destination: destination)
+
+        XCTAssertEqual(ordered.map(\.id), [source.id, destination.id])
+    }
+
+    func testListingSequenceDoesNotListTheSameConnectionTwice() {
+        let ordered = DatabaseListingSequence.ordered(source: source, destination: source)
+
+        XCTAssertEqual(ordered.map(\.id), [source.id])
+    }
+
+    func testDatabasePickerKeepsAMissingNameSelectableAndMarkedAbsent() {
+        let options = DatabasePickerOptions.menu(
+            liveNames: ["shop", "mysql"],
+            selected: "gone",
+            showSystem: false
+        )
+
+        XCTAssertEqual(options.map(\.id), ["", "shop", "gone"])
+        XCTAssertEqual(options.map(\.title), ["Choose a Database", "shop", "gone (absent)"])
+    }
+
+    func testStartDumpNeedsADestinationDatabaseWhenStrategyUsesAnExistingOne() {
+        XCTAssertFalse(
+            PullForm.canStartDump(
+                sourceDatabase: "shop",
+                strategy: .replace,
+                destinationDatabase: "",
+                newDatabaseName: "shop_fresh"
+            )
+        )
+        XCTAssertTrue(
+            PullForm.canStartDump(
+                sourceDatabase: "shop",
+                strategy: .replace,
+                destinationDatabase: "local_shop",
+                newDatabaseName: ""
+            )
+        )
+        XCTAssertTrue(
+            PullForm.canStartDump(
+                sourceDatabase: "shop",
+                strategy: .createNew,
+                destinationDatabase: "",
+                newDatabaseName: "shop_fresh"
+            )
+        )
+        XCTAssertFalse(
+            PullForm.canStartDump(
+                sourceDatabase: "shop",
+                strategy: .createNew,
+                destinationDatabase: "local_shop",
+                newDatabaseName: ""
+            )
+        )
+    }
 }
 
 final class SettingsStoreTests: XCTestCase {

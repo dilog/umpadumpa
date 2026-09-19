@@ -51,8 +51,8 @@ struct ContentView: View {
     @State private var selectedNav = ""
     @State private var selectedRecipeId = ""
     @State private var sourceDatabase = ""
-    @State private var destinationConnectionId = "localhost"
-    @State private var destinationDatabase = "welcome"
+    @State private var destinationConnectionId = ""
+    @State private var destinationDatabase = ""
     @State private var strategy = "backup"
     @State private var replaceMode = ReplaceMode.importInPlace.rawValue
     @State private var newDatabaseName = "welcome_fresh"
@@ -62,6 +62,7 @@ struct ContentView: View {
     @State private var tableScope = "all"
     @State private var selectedTableNames: Set<String> = []
     @State private var skipTableReset = false
+    @State private var skipDestinationLoad = false
     @State private var showSaveRecipeName = false
     @State private var newRecipeTitle = ""
     @State private var connectionToDelete: Connection?
@@ -99,6 +100,10 @@ struct ContentView: View {
             if let uuid = UUID(uuidString: id),
                let recipe = model.recipes.first(where: { $0.id == uuid }) {
                 applyRecipe(recipe)
+                skipDestinationLoad = false
+                if let source = realSelectedConnection {
+                    loadDatabasesForCurrentEnds(source: source)
+                }
             }
         }
         .onChange(of: sourceDatabase) { _, _ in
@@ -110,13 +115,11 @@ struct ContentView: View {
             selectedTableNames = []
         }
         .onChange(of: destinationConnectionId) { _, id in
-            if prototypeConnections.contains(where: { $0.id == id }) == false {
-                // real connections use typed database names
-            } else if let connection = prototypeConnections.first(where: { $0.id == id }) {
-                let names = visibleDatabases(for: connection)
-                if names.contains(destinationDatabase) == false {
-                    destinationDatabase = connection.databases.first ?? destinationDatabase
-                }
+            if skipDestinationLoad {
+                return
+            }
+            if let dest = model.connections.first(where: { $0.id.uuidString == id }) {
+                model.loadDatabases(for: dest, force: false)
             }
         }
         .onChange(of: destinationDatabase) { _, name in
@@ -156,26 +159,27 @@ struct ContentView: View {
         return options
     }
 
-    private func visibleDatabases(for connection: FakeConnection) -> [String] {
-        if showSystemDatabases {
-            return connection.databases + connection.systemDatabases
-        }
-        return connection.databases
+    private func databasePickerOptions(
+        for connection: Connection,
+        selected: String
+    ) -> [(id: String, title: String)] {
+        DatabasePickerOptions.menu(
+            liveNames: model.databaseNamesByConnectionId[connection.id] ?? [],
+            selected: selected,
+            showSystem: showSystemDatabases
+        ).map { (id: $0.id, title: $0.title) }
     }
 
-    private func sourceDatabasePickerOptions(for connection: Connection) -> [(id: String, title: String)] {
-        let live = SystemDatabases.visible(
-            model.databaseNamesByConnectionId[connection.id] ?? [],
-            showSystem: showSystemDatabases
+    private var realDestinationConnection: Connection? {
+        model.connections.first { $0.id.uuidString == destinationConnectionId }
+    }
+
+    private func loadDatabasesForCurrentEnds(source: Connection) {
+        model.loadSourceThenDestination(
+            source: source,
+            destination: realDestinationConnection,
+            force: false
         )
-        var options = [(id: "", title: "Choose a Database")]
-        for name in live {
-            options.append((id: name, title: name))
-        }
-        if sourceDatabase.isEmpty == false && live.contains(sourceDatabase) == false {
-            options.append((id: sourceDatabase, title: "\(sourceDatabase) (absent)"))
-        }
-        return options
     }
 
     private func copyText(_ text: String) {
@@ -390,6 +394,7 @@ struct ContentView: View {
     private func selectNav(_ id: String) {
         selectedNav = id
         selectedRecipeId = ""
+        skipDestinationLoad = true
 
         if let connection = model.connections.first(where: { $0.id.uuidString == id }) {
             sourceDatabase = ""
@@ -409,11 +414,10 @@ struct ContentView: View {
                 applyRecipe(recipe)
             }
 
-            model.loadDatabases(for: connection, force: false)
+            loadDatabasesForCurrentEnds(source: connection)
         }
+        skipDestinationLoad = false
     }
-
-    // MARK: - Main
 
     private var mainArea: some View {
         Group {
@@ -579,7 +583,7 @@ struct ContentView: View {
         .padding(.bottom, 18)
         .padding(.top, 16)
         .onAppear {
-            model.loadDatabases(for: connection, force: false)
+            loadDatabasesForCurrentEnds(source: connection)
         }
     }
 
@@ -598,6 +602,7 @@ struct ContentView: View {
 
     private func applyRecipe(_ recipe: Recipe) {
         skipTableReset = true
+        skipDestinationLoad = true
         sourceDatabase = recipe.sourceDatabase
         destinationConnectionId = recipe.destinationConnectionId.uuidString
         destinationDatabase = recipe.destinationDatabase
@@ -679,7 +684,12 @@ struct ContentView: View {
             strategyValue = .replace
         }
 
-        if destName.isEmpty || sourceDatabase.isEmpty {
+        if PullForm.canStartDump(
+            sourceDatabase: sourceDatabase,
+            strategy: strategyValue,
+            destinationDatabase: destinationDatabase,
+            newDatabaseName: newDatabaseName
+        ) == false {
             return nil
         }
 
@@ -745,18 +755,12 @@ struct ContentView: View {
         }
     }
 
-    private func originColumn(for connection: Connection) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            cardTitle("Source", icon: "icloud")
-
-            fieldLabel("Connection")
-            lockedField(text: connection.name, icon: "lock.fill")
-
-            fieldLabel("Database")
+    private func liveDatabasePicker(connection: Connection, selection: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
                 nativePicker(
-                    selection: $sourceDatabase,
-                    options: sourceDatabasePickerOptions(for: connection)
+                    selection: selection,
+                    options: databasePickerOptions(for: connection, selected: selection.wrappedValue)
                 )
                 if model.loadingDatabaseConnectionId == connection.id {
                     ProgressView()
@@ -785,6 +789,18 @@ struct ContentView: View {
                     .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
                 }
             }
+        }
+    }
+
+    private func originColumn(for connection: Connection) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            cardTitle("Source", icon: "icloud")
+
+            fieldLabel("Connection")
+            lockedField(text: connection.name, icon: "lock.fill")
+
+            fieldLabel("Database")
+            liveDatabasePicker(connection: connection, selection: $sourceDatabase)
 
             Toggle("System databases", isOn: $showSystemDatabases)
                 .font(.system(size: 12))
@@ -848,10 +864,10 @@ struct ContentView: View {
                 options: model.connections.map { (id: $0.id.uuidString, title: $0.name) }
             )
 
-            fieldLabel("Database")
-            TextField("Database", text: $destinationDatabase)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.extraLarge)
+            if strategy != "create", let dest = realDestinationConnection {
+                fieldLabel("Database")
+                liveDatabasePicker(connection: dest, selection: $destinationDatabase)
+            }
 
             fieldLabel("Strategy")
 
@@ -1070,7 +1086,12 @@ struct ContentView: View {
             strategyValue = .replace
         }
 
-        if destName.isEmpty {
+        if PullForm.canStartDump(
+            sourceDatabase: sourceDatabase,
+            strategy: strategyValue,
+            destinationDatabase: destinationDatabase,
+            newDatabaseName: newDatabaseName
+        ) == false {
             return nil
         }
 
