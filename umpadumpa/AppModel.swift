@@ -7,6 +7,7 @@ final class AppModel {
     private let secrets: SecretStoring
     private let historyStore: HistoryStoring
     private let settingsStore: SettingsStoring
+    private let lastRecipeStore: LastRecipeStoring
     let engine: PullEngine
 
     var connections: [Connection] = []
@@ -55,6 +56,8 @@ final class AppModel {
         self.secrets = secrets
         self.historyStore = historyStore
         self.settingsStore = settingsStore
+        let lastRecipeStore = DiskLastRecipeStore(disk: disk)
+        self.lastRecipeStore = lastRecipeStore
         self.engine = PullEngine(
             secrets: secrets,
             clock: SystemClock(),
@@ -62,7 +65,8 @@ final class AppModel {
             history: historyStore,
             tunnels: RealSSHTunnel(secrets: secrets),
             settings: settingsStore,
-            paths: FilePathChecker()
+            paths: FilePathChecker(),
+            lastRecipes: lastRecipeStore
         )
         self.engine.onPhase = { [weak self] phase in
             Task { @MainActor in
@@ -95,6 +99,11 @@ final class AppModel {
         history = historyStore.entries
     }
 
+    func clearHistory() {
+        historyStore.clear()
+        history = historyStore.entries
+    }
+
     func saveRecipe(_ recipe: Recipe) {
         disk.saveRecipe(recipe)
         recipes = disk.loadRecipes()
@@ -103,6 +112,14 @@ final class AppModel {
     func deleteRecipe(id: UUID) {
         disk.deleteRecipe(id: id)
         recipes = disk.loadRecipes()
+    }
+
+    func lastUsedRecipe(forConnectionId connectionId: UUID) -> Recipe? {
+        Recipe.lastUsed(
+            forSourceConnectionId: connectionId,
+            in: recipes,
+            lastRecipeId: lastRecipeStore.lastRecipeId(forSourceConnectionId: connectionId)
+        )
     }
 
     var selectedConnection: Connection? {

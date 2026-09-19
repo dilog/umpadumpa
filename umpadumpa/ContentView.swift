@@ -65,6 +65,7 @@ struct ContentView: View {
     @State private var showSaveRecipeName = false
     @State private var newRecipeTitle = ""
     @State private var connectionToDelete: Connection?
+    @State private var showClearHistoryConfirm = false
     @State private var recipeSavedMessage: String?
     @State private var recipeSavedClearTask: Task<Void, Never>?
 
@@ -380,6 +381,11 @@ struct ContentView: View {
             skipTableReset = true
             tableScope = "all"
             selectedTableNames = []
+
+            if let recipe = model.lastUsedRecipe(forConnectionId: connection.id) {
+                selectedRecipeId = recipe.id.uuidString
+                applyRecipe(recipe)
+            }
         }
     }
 
@@ -404,8 +410,26 @@ struct ContentView: View {
 
     private var historyScreen: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("History")
-                .font(.system(size: 28, weight: .bold))
+            HStack {
+                Text("History")
+                    .font(.system(size: 28, weight: .bold))
+                Spacer()
+                Button("Clear History") {
+                    showClearHistoryConfirm = true
+                }
+            }
+            .confirmationDialog(
+                "Clear History?",
+                isPresented: $showClearHistoryConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Clear History", role: .destructive) {
+                    model.clearHistory()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes the whole History log. You cannot undo it.")
+            }
 
             Table(model.history) {
                 TableColumn("When") { row in
@@ -1003,7 +1027,8 @@ struct ContentView: View {
             strategy: strategyValue,
             replaceMode: mode,
             tables: tableScope == "choose" ? chosenTables : [],
-            backupName: strategy == "backup" ? backupName : ""
+            backupName: strategy == "backup" ? backupName : "",
+            recipeId: UUID(uuidString: selectedRecipeId)
         )
     }
 

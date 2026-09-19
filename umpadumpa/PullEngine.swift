@@ -8,6 +8,7 @@ nonisolated final class PullEngine {
     private let tunnels: SSHTunneling
     private let settings: SettingsStoring
     private let paths: PathChecking
+    private let lastRecipes: LastRecipeStoring
     private let lock = NSLock()
 
     private(set) var isRunning = false
@@ -20,7 +21,8 @@ nonisolated final class PullEngine {
         history: HistoryStoring,
         tunnels: SSHTunneling,
         settings: SettingsStoring,
-        paths: PathChecking
+        paths: PathChecking,
+        lastRecipes: LastRecipeStoring
     ) {
         self.secrets = secrets
         self.clock = clock
@@ -29,6 +31,7 @@ nonisolated final class PullEngine {
         self.tunnels = tunnels
         self.settings = settings
         self.paths = paths
+        self.lastRecipes = lastRecipes
     }
 
     func confirm(_ request: PullRequest) -> ConfirmSummary {
@@ -110,7 +113,7 @@ nonisolated final class PullEngine {
             _ = try executable(for: .mysql)
         } catch {
             let entry = makeHistory(request: request, succeeded: false)
-            history.append(entry)
+            rememberPull(entry, request: request)
             report(.failed)
             throw error
         }
@@ -156,12 +159,12 @@ nonisolated final class PullEngine {
             )
         } catch let PullError.dumpFailed(detail) {
             let entry = makeHistory(request: request, succeeded: false)
-            history.append(entry)
+            rememberPull(entry, request: request)
             report(.failed)
             throw PullError.dumpFailed(detail)
         } catch {
             let entry = makeHistory(request: request, succeeded: false)
-            history.append(entry)
+            rememberPull(entry, request: request)
             report(.failed)
             throw PullError.dumpFailed(String(describing: error))
         }
@@ -171,7 +174,7 @@ nonisolated final class PullEngine {
                 destReach = try await openReachability(for: request.destinationConnection)
             } catch {
                 let entry = makeHistory(request: request, succeeded: false)
-                history.append(entry)
+                rememberPull(entry, request: request)
                 report(.failed)
                 throw PullError.tunnelFailed
             }
@@ -279,13 +282,13 @@ nonisolated final class PullEngine {
             )
         } catch {
             let entry = makeHistory(request: request, succeeded: false)
-            history.append(entry)
+            rememberPull(entry, request: request)
             report(.failed)
             throw PullError.importFailed
         }
 
         let entry = makeHistory(request: request, succeeded: true)
-        history.append(entry)
+        rememberPull(entry, request: request)
         report(.succeeded)
         return entry
     }
@@ -295,7 +298,7 @@ nonisolated final class PullEngine {
             return try await openReachability(for: connection)
         } catch {
             let entry = makeHistory(request: historyRequest, succeeded: false)
-            history.append(entry)
+            rememberPull(entry, request: historyRequest)
             report(.failed)
             throw PullError.tunnelFailed
         }
@@ -323,10 +326,13 @@ nonisolated final class PullEngine {
         inputPath: String?
     ) throws -> ExternalCommand {
         let executable = try executable(for: tool)
+        let dumpCompression = tool == .mysqldump
+            ? ["--compression-algorithms=zstd,zlib,uncompressed"]
+            : []
         return ExternalCommand(
             tool: tool,
             executable: executable,
-            arguments: extra + [
+            arguments: dumpCompression + extra + [
                 "-h", host,
                 "-P", String(port),
                 "-u", connection.user
@@ -360,7 +366,7 @@ nonisolated final class PullEngine {
             )
         } catch {
             let entry = makeHistory(request: historyRequest, succeeded: false)
-            history.append(entry)
+            rememberPull(entry, request: historyRequest)
             report(.failed)
             throw PullError.importFailed
         }
@@ -392,6 +398,13 @@ nonisolated final class PullEngine {
 
     private func report(_ phase: PullPhase) {
         onPhase?(phase)
+    }
+
+    private func rememberPull(_ entry: HistoryEntry, request: PullRequest) {
+        history.append(entry)
+        if let recipeId = request.recipeId {
+            lastRecipes.record(recipeId: recipeId, forSourceConnectionId: request.sourceConnection.id)
+        }
     }
 
     private func makeHistory(request: PullRequest, succeeded: Bool) -> HistoryEntry {

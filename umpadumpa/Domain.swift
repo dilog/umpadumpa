@@ -107,7 +107,8 @@ struct Recipe: Identifiable, Codable, Equatable {
             destinationDatabase: destinationDatabase,
             strategy: strategy,
             replaceMode: replaceMode,
-            tables: tables
+            tables: tables,
+            recipeId: id
         )
     }
 
@@ -121,6 +122,17 @@ struct Recipe: Identifiable, Codable, Equatable {
     static func forSource(connectionId: UUID, in recipes: [Recipe]) -> [Recipe] {
         recipes.filter { $0.sourceConnectionId == connectionId }
     }
+
+    static func lastUsed(
+        forSourceConnectionId connectionId: UUID,
+        in recipes: [Recipe],
+        lastRecipeId: UUID?
+    ) -> Recipe? {
+        guard let lastRecipeId else {
+            return nil
+        }
+        return recipes.first { $0.id == lastRecipeId }
+    }
 }
 
 struct PullRequest: Equatable {
@@ -132,6 +144,7 @@ struct PullRequest: Equatable {
     var replaceMode: ReplaceMode
     var tables: [String]
     var backupName: String = ""
+    var recipeId: UUID? = nil
 }
 
 struct ConfirmSummary: Equatable {
@@ -217,6 +230,12 @@ protocol SSHTunneling: AnyObject {
 protocol HistoryStoring: AnyObject {
     var entries: [HistoryEntry] { get }
     func append(_ entry: HistoryEntry)
+    func clear()
+}
+
+protocol LastRecipeStoring: AnyObject {
+    func record(recipeId: UUID, forSourceConnectionId connectionId: UUID)
+    func lastRecipeId(forSourceConnectionId connectionId: UUID) -> UUID?
 }
 
 protocol SettingsStoring: AnyObject {

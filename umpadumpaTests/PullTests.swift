@@ -9,6 +9,7 @@ final class PullTests: XCTestCase {
     private var tunnels: FakeSSHTunnel!
     private var settings: MemorySettingsStore!
     private var paths: FakePathChecker!
+    private var lastRecipes: MemoryLastRecipeStore!
     private var engine: PullEngine!
 
     override func setUp() {
@@ -19,6 +20,7 @@ final class PullTests: XCTestCase {
         tunnels = FakeSSHTunnel()
         settings = MemorySettingsStore()
         paths = FakePathChecker()
+        lastRecipes = MemoryLastRecipeStore()
         engine = PullEngine(
             secrets: secrets,
             clock: clock,
@@ -26,7 +28,8 @@ final class PullTests: XCTestCase {
             history: history,
             tunnels: tunnels,
             settings: settings,
-            paths: paths
+            paths: paths,
+            lastRecipes: lastRecipes
         )
 
         processes.tablesByDatabase["shop"] = ["users", "orders"]
@@ -597,6 +600,65 @@ final class PullTests: XCTestCase {
         XCTAssertEqual(history.entries.count, 1)
         XCTAssertEqual(history.entries[0].succeeded, false)
     }
+
+    func testPullAppendAlsoCapsHistoryAt100() async throws {
+        for n in 1...100 {
+            history.append(
+                HistoryEntry(
+                    id: UUID(),
+                    when: Date(timeIntervalSince1970: TimeInterval(n)),
+                    source: "old / db",
+                    destination: "old / dest",
+                    succeeded: true
+                )
+            )
+        }
+
+        let summary = engine.confirm(request())
+        _ = try await engine.run(summary)
+
+        XCTAssertEqual(history.entries.count, 100)
+        XCTAssertEqual(history.entries.first?.source, "old / db")
+        XCTAssertEqual(history.entries.first?.when, Date(timeIntervalSince1970: 2))
+        XCTAssertEqual(history.entries.last?.source, "Prod / shop")
+    }
+
+    func testSuccessfulPullWithRecipeIdRecordsLastRecipeForTheSourceConnection() async throws {
+        let recipeId = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        var pull = request()
+        pull.recipeId = recipeId
+
+        _ = try await engine.run(engine.confirm(pull))
+
+        XCTAssertEqual(lastRecipes.lastRecipeId(forSourceConnectionId: source.id), recipeId)
+    }
+
+    func testFailedPullWithRecipeIdStillRecordsLastRecipeForTheSourceConnection() async {
+        let recipeId = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        var pull = request()
+        pull.recipeId = recipeId
+        processes.failDump = true
+
+        do {
+            _ = try await engine.run(engine.confirm(pull))
+            XCTFail("expected dump failure")
+        } catch PullError.dumpFailed(_) {
+            // expected
+        } catch {
+            XCTFail("wrong error \(error)")
+        }
+
+        XCTAssertEqual(lastRecipes.lastRecipeId(forSourceConnectionId: source.id), recipeId)
+    }
+
+    func testOneOffPullDoesNotChangeTheRecordedLastRecipe() async throws {
+        let recipeId = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        lastRecipes.record(recipeId: recipeId, forSourceConnectionId: source.id)
+
+        _ = try await engine.run(engine.confirm(request()))
+
+        XCTAssertEqual(lastRecipes.lastRecipeId(forSourceConnectionId: source.id), recipeId)
+    }
 }
 
 final class SettingsStoreTests: XCTestCase {
@@ -814,7 +876,8 @@ final class RecipeStoreTests: XCTestCase {
             history: history,
             tunnels: FakeSSHTunnel(),
             settings: MemorySettingsStore(),
-            paths: FakePathChecker()
+            paths: FakePathChecker(),
+            lastRecipes: MemoryLastRecipeStore()
         )
         _ = try await engine.run(engine.confirm(pull))
 
@@ -865,6 +928,84 @@ final class RecipeStoreTests: XCTestCase {
         XCTAssertEqual(listed.map(\.title), ["Welcome daily"])
     }
 
+    func testLastUsedRecipeIsNoneWhenNeverPulledOrRecipeIsGone() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let disk = DiskStore(folder: folder)
+        let lastRecipes = DiskLastRecipeStore(disk: disk)
+        let daily = dailyRecipe()
+
+        XCTAssertNil(
+            Recipe.lastUsed(
+                forSourceConnectionId: sourceId,
+                in: [daily],
+                lastRecipeId: lastRecipes.lastRecipeId(forSourceConnectionId: sourceId)
+            )
+        )
+
+        disk.saveRecipe(daily)
+        lastRecipes.record(recipeId: daily.id, forSourceConnectionId: sourceId)
+        XCTAssertEqual(
+            Recipe.lastUsed(
+                forSourceConnectionId: sourceId,
+                in: disk.loadRecipes(),
+                lastRecipeId: lastRecipes.lastRecipeId(forSourceConnectionId: sourceId)
+            )?.id,
+            daily.id
+        )
+
+        disk.deleteRecipe(id: daily.id)
+        XCTAssertNil(
+            Recipe.lastUsed(
+                forSourceConnectionId: sourceId,
+                in: disk.loadRecipes(),
+                lastRecipeId: lastRecipes.lastRecipeId(forSourceConnectionId: sourceId)
+            )
+        )
+    }
+
+    func testPullWithRecipePersistsLastRecipeAndOneOffLeavesIt() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let disk = DiskStore(folder: folder)
+        let lastRecipes = DiskLastRecipeStore(disk: disk)
+        let recipe = dailyRecipe()
+        disk.saveRecipe(recipe)
+
+        let secrets = MemorySecretStore()
+        let processes = FakeProcessRunner()
+        processes.tablesByDatabase["shop"] = ["users"]
+        processes.tablesByDatabase["local_shop"] = []
+        secrets.setPassword("src", forConnectionId: sourceId)
+        secrets.setPassword("dst", forConnectionId: destId)
+
+        let source = Connection(id: sourceId, name: "Prod", host: "prod.example", port: 3306, user: "dump")
+        let destination = Connection(id: destId, name: "Localhost", host: "127.0.0.1", port: 3306, user: "root")
+
+        let engine = PullEngine(
+            secrets: secrets,
+            clock: FixedClock(now: Date(timeIntervalSince1970: 1_000_000)),
+            processes: processes,
+            history: MemoryHistoryStore(),
+            tunnels: FakeSSHTunnel(),
+            settings: MemorySettingsStore(),
+            paths: FakePathChecker(),
+            lastRecipes: lastRecipes
+        )
+
+        let recipePull = recipe.pullRequest(source: source, destination: destination)
+        XCTAssertEqual(recipePull.recipeId, recipe.id)
+        _ = try await engine.run(engine.confirm(recipePull))
+        XCTAssertEqual(disk.lastRecipeId(forSourceConnectionId: sourceId), recipe.id)
+
+        var oneOff = recipePull
+        oneOff.recipeId = nil
+        oneOff.strategy = .replace
+        oneOff.destinationDatabase = "local_shop"
+        _ = try await engine.run(engine.confirm(oneOff))
+        XCTAssertEqual(disk.lastRecipeId(forSourceConnectionId: sourceId), recipe.id)
+    }
+
     func testEmptyTablesMeansEntireDatabaseAndNamedListIsSelectedTables() {
         let source = Connection(id: sourceId, name: "Prod", host: "prod.example", port: 3306, user: "dump")
         let destination = Connection(id: destId, name: "Localhost", host: "127.0.0.1", port: 3306, user: "root")
@@ -895,7 +1036,9 @@ final class RecipeStoreTests: XCTestCase {
         disk.deleteRecipe(id: copy.id)
         XCTAssertEqual(disk.loadRecipes(), [recipe])
     }
+}
 
+final class HistoryStoreTests: XCTestCase {
     func testHistoryAppendKeepsOnlyTheNewest100Rows() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -941,27 +1084,5 @@ final class RecipeStoreTests: XCTestCase {
 
         XCTAssertTrue(history.entries.isEmpty)
         XCTAssertTrue(disk.loadHistory().isEmpty)
-    }
-
-    func testPullAppendAlsoCapsHistoryAt100() async throws {
-        for n in 1...100 {
-            history.append(
-                HistoryEntry(
-                    id: UUID(),
-                    when: Date(timeIntervalSince1970: TimeInterval(n)),
-                    source: "old / db",
-                    destination: "old / dest",
-                    succeeded: true
-                )
-            )
-        }
-
-        let summary = engine.confirm(request())
-        _ = try await engine.run(summary)
-
-        XCTAssertEqual(history.entries.count, 100)
-        XCTAssertEqual(history.entries.first?.source, "old / db")
-        XCTAssertEqual(history.entries.first?.when, Date(timeIntervalSince1970: 2))
-        XCTAssertEqual(history.entries.last?.source, "Prod / shop")
     }
 }
