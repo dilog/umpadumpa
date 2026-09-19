@@ -131,7 +131,7 @@ struct Recipe: Identifiable, Codable, Equatable {
         guard let lastRecipeId else {
             return nil
         }
-        return recipes.first { $0.id == lastRecipeId }
+        return recipes.first { $0.id == lastRecipeId && $0.sourceConnectionId == connectionId }
     }
 }
 
