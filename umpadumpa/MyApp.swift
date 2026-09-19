@@ -8,7 +8,7 @@ import AppKit
 
     var body: some Scene {
         #if os(macOS)
-        WindowGroup("umpadumpa") {
+        WindowGroup("UmpaDumpa") {
             ContentView(model: model)
                 .preferredColorScheme(.light)
                 .onAppear {
@@ -16,7 +16,7 @@ import AppKit
                 }
         }
         .windowResizability(.contentSize)
-        .defaultSize(width: 980, height: 720)
+        .defaultSize(width: 980, height: 840)
         #else
         WindowGroup {
             ContentView(model: model)

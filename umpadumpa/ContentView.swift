@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 // MOCKUP ONLY. Fake data, no MySQL.
 
@@ -61,6 +64,9 @@ struct ContentView: View {
     @State private var skipTableReset = false
     @State private var showSaveRecipeName = false
     @State private var newRecipeTitle = ""
+    @State private var connectionToDelete: Connection?
+    @State private var recipeSavedMessage: String?
+    @State private var recipeSavedClearTask: Task<Void, Never>?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -70,7 +76,7 @@ struct ContentView: View {
         }
         .preferredColorScheme(.light)
         .background(Color.white)
-        .frame(minWidth: 980, minHeight: 720)
+        .frame(minWidth: 980, idealWidth: 980, minHeight: 720, idealHeight: 840)
         .sheet(isPresented: $showConfirm) {
             confirmSheet
                 .preferredColorScheme(.light)
@@ -193,16 +199,25 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             appLogo
                 .padding(.horizontal, 16)
-                .padding(.top, 18)
-                .padding(.bottom, 18)
+                .padding(.top, 20)
+                .padding(.bottom, 20)
+                .frame(maxWidth: .infinity)
 
-            ForEach(model.connections) { connection in
-                sidebarButton(
-                    id: connection.id.uuidString,
-                    title: connection.name,
-                    icon: connection.name.lowercased() == "localhost" ? "laptopcomputer" : "externaldrive.fill"
-                )
+            List {
+                ForEach(model.connections) { connection in
+                    connectionSidebarRow(connection)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+                .onMove { fromOffsets, toOffset in
+                    model.moveConnections(fromOffsets: fromOffsets, toOffset: toOffset)
+                }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 1)
+            .frame(maxHeight: .infinity)
 
             Button {
                 model.showNewConnection = true
@@ -225,20 +240,102 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .frame(width: 230)
         .background(Color(red: 0.965, green: 0.973, blue: 0.984))
+        .confirmationDialog(
+            "Delete Connection?",
+            isPresented: Binding(
+                get: { connectionToDelete != nil },
+                set: { if $0 == false { connectionToDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                confirmDeleteConnection()
+            }
+            Button("Cancel", role: .cancel) {
+                connectionToDelete = nil
+            }
+        } message: {
+            if let connection = connectionToDelete {
+                Text("This removes \(connection.name), its saved passwords, and Recipes that use it as source. History is not changed.")
+            }
+        }
     }
 
     private var appLogo: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(red: 0.20, green: 0.45, blue: 0.98))
-                    .frame(width: 28, height: 28)
-                Image(systemName: "cylinder.split.1x2.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            Text("umpadumpa")
+        VStack(spacing: 10) {
+            Image("AppLogo")
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 96, height: 96)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            Text("UmpaDumpa")
                 .font(.system(size: 15, weight: .semibold))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func connectionSidebarRow(_ connection: Connection) -> some View {
+        let id = connection.id.uuidString
+        let isSelected = selectedNav == id
+        let icon = connection.name.lowercased() == "localhost" ? "laptopcomputer" : "externaldrive.fill"
+
+        return HStack(spacing: 4) {
+            Button {
+                selectNav(id)
+            } label: {
+                Label(connection.name, systemImage: icon)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(
+                        isSelected
+                            ? Color(red: 0.15, green: 0.42, blue: 0.95)
+                            : Color(red: 0.35, green: 0.40, blue: 0.48)
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(isSelected ? Color(red: 0.86, green: 0.92, blue: 1.0) : Color.clear)
+                    )
+            }
+            .buttonStyle(.plain)
+            .labelStyle(.titleAndIcon)
+
+            Button {
+                connectionToDelete = connection
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(red: 0.62, green: 0.38, blue: 0.38))
+                    .padding(.trailing, 8)
+            }
+            .buttonStyle(.plain)
+            .help("Delete Connection")
+            .accessibilityLabel("Delete \(connection.name)")
+        }
+    }
+
+    private func confirmDeleteConnection() {
+        guard let connection = connectionToDelete else {
+            return
+        }
+        let deletedId = connection.id.uuidString
+        model.deleteConnection(id: connection.id)
+        connectionToDelete = nil
+
+        if selectedNav == deletedId {
+            if let first = model.connections.first {
+                selectNav(first.id.uuidString)
+            } else {
+                selectedNav = ""
+            }
+        }
+
+        if destinationConnectionId == deletedId {
+            destinationConnectionId = model.connections.first { $0.name.lowercased() == "localhost" }?.id.uuidString
+                ?? model.connections.first?.id.uuidString
+                ?? ""
         }
     }
 
@@ -394,6 +491,8 @@ struct ContentView: View {
                             options: recipeMenuOptions
                         )
 
+                        Spacer(minLength: 8)
+
                         if selectedRecipeId != "" {
                             Button(action: duplicateSelectedRecipe) {
                                 Label("Duplicate", systemImage: "plus.square.on.square")
@@ -425,11 +524,7 @@ struct ContentView: View {
             }
 
             Spacer()
-            if let error = model.pullError {
-                Text(error)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color(red: 0.90, green: 0.30, blue: 0.30))
-            }
+            pullStatusRow
             footerBar
         }
         .padding(.horizontal, 28)
@@ -570,6 +665,7 @@ struct ContentView: View {
             return
         }
         model.saveRecipe(updated)
+        showRecipeSaved()
     }
 
     private func persistNewRecipe(title: String) {
@@ -583,6 +679,19 @@ struct ContentView: View {
         selectedRecipeId = recipe.id.uuidString
         showSaveRecipeName = false
         newRecipeTitle = ""
+        showRecipeSaved()
+    }
+
+    private func showRecipeSaved() {
+        recipeSavedMessage = "Recipe saved."
+        recipeSavedClearTask?.cancel()
+        recipeSavedClearTask = Task {
+            try? await Task.sleep(for: .seconds(3))
+            if Task.isCancelled {
+                return
+            }
+            recipeSavedMessage = nil
+        }
     }
 
     private func originColumn(for connection: Connection) -> some View {
@@ -706,6 +815,55 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var pullStatusRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let recipeSavedMessage {
+                Text(recipeSavedMessage)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(red: 0.16, green: 0.55, blue: 0.30))
+            }
+
+            if model.isPulling {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(pullPhaseText)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color(red: 0.12, green: 0.14, blue: 0.20))
+                }
+            } else if model.pullPhase == .succeeded {
+                Text("Done. The Pull succeeded. See History for the log.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(red: 0.16, green: 0.55, blue: 0.30))
+                    .textSelection(.enabled)
+            }
+
+            if let error = model.pullError {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(red: 0.90, green: 0.30, blue: 0.30))
+                        .textSelection(.enabled)
+                    Button("Copy error") {
+                        copyErrorToClipboard(error)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private var pullPhaseText: String {
+        if model.pullPhase == .creatingBackup {
+            return "Creating Backup…"
+        }
+        if model.pullPhase == .importingDestination {
+            return "Importing destination…"
+        }
+        return "Dumping source…"
+    }
+
     private var footerBar: some View {
         VStack(spacing: 0) {
             Divider()
@@ -731,7 +889,7 @@ struct ContentView: View {
                 Button {
                     showConfirm = true
                 } label: {
-                    Label("Start dump", systemImage: "arrow.down.circle.fill")
+                    Label(model.isPulling ? "Dumping…" : "Start dump", systemImage: "arrow.down.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.extraLarge)
@@ -855,35 +1013,47 @@ struct ContentView: View {
         }
         let summary = model.engine.confirm(request)
         showConfirm = false
+        model.pullError = nil
+        model.pullPhase = .dumpingSource
         model.isPulling = true
         Task {
             defer { model.isPulling = false }
             do {
                 _ = try await model.engine.run(summary)
                 model.pullError = nil
+                model.pullPhase = .succeeded
                 model.refreshHistory()
             } catch PullError.alreadyRunning {
+                model.pullPhase = .failed
                 model.pullError = "A Pull is already running."
                 model.refreshHistory()
-            } catch PullError.dumpFailed {
-                model.pullError = "Dump failed. Destination was not changed."
+            } catch let PullError.dumpFailed(detail) {
+                model.pullPhase = .failed
+                let extra = detail.isEmpty ? "" : " \(detail)"
+                model.pullError = "Dump failed. Destination was not changed.\(extra)"
                 model.refreshHistory()
             } catch PullError.tunnelFailed {
+                model.pullPhase = .failed
                 model.pullError = "SSH tunnel failed. Destination was not changed."
                 model.refreshHistory()
             } catch PullError.missingClient(.mysqldump) {
+                model.pullPhase = .failed
                 model.pullError = "mysqldump was not found. Set its path in Settings."
                 model.refreshHistory()
             } catch PullError.missingClient(.mysql) {
+                model.pullPhase = .failed
                 model.pullError = "mysql was not found. Set its path in Settings."
                 model.refreshHistory()
             } catch PullError.nameAlreadyExists {
+                model.pullPhase = .failed
                 model.pullError = "That name already exists. The destination was not changed."
                 model.refreshHistory()
             } catch PullError.importFailed {
+                model.pullPhase = .failed
                 model.pullError = "Import failed."
                 model.refreshHistory()
             } catch {
+                model.pullPhase = .failed
                 model.pullError = "Pull failed."
                 model.refreshHistory()
             }
@@ -1084,11 +1254,15 @@ struct ContentView: View {
             )
     }
 
+    private func copyErrorToClipboard(_ error: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(error, forType: .string)
+        #endif
+    }
+
     private func statusRow(text: String, ssh: Bool) -> some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(Color(red: 0.22, green: 0.78, blue: 0.40))
-                .frame(width: 7, height: 7)
             if ssh {
                 Image(systemName: "lock.fill")
                     .font(.system(size: 10))
@@ -1098,6 +1272,7 @@ struct ContentView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(Color(red: 0.45, green: 0.49, blue: 0.55))
         }
+        .accessibilityLabel(text)
     }
 
     private func replaceModeChoice(id: String, title: String, icon: String) -> some View {
