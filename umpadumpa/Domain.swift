@@ -122,17 +122,6 @@ struct Recipe: Identifiable, Codable, Equatable {
     static func forSource(connectionId: UUID, in recipes: [Recipe]) -> [Recipe] {
         recipes.filter { $0.sourceConnectionId == connectionId }
     }
-
-    static func lastUsed(
-        forSourceConnectionId connectionId: UUID,
-        in recipes: [Recipe],
-        lastRecipeId: UUID?
-    ) -> Recipe? {
-        guard let lastRecipeId else {
-            return nil
-        }
-        return recipes.first { $0.id == lastRecipeId && $0.sourceConnectionId == connectionId }
-    }
 }
 
 struct PullRequest: Equatable {
@@ -248,11 +237,6 @@ protocol HistoryStoring: AnyObject {
     var entries: [HistoryEntry] { get }
     func append(_ entry: HistoryEntry)
     func clear()
-}
-
-protocol LastRecipeStoring: AnyObject {
-    func record(recipeId: UUID, forSourceConnectionId connectionId: UUID)
-    func lastRecipeId(forSourceConnectionId connectionId: UUID) -> UUID?
 }
 
 protocol SettingsStoring: AnyObject {

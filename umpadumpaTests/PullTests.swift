@@ -9,7 +9,6 @@ final class PullTests: XCTestCase {
     private var tunnels: FakeSSHTunnel!
     private var settings: MemorySettingsStore!
     private var paths: FakePathChecker!
-    private var lastRecipes: MemoryLastRecipeStore!
     private var engine: PullEngine!
 
     override func setUp() {
@@ -20,7 +19,6 @@ final class PullTests: XCTestCase {
         tunnels = FakeSSHTunnel()
         settings = MemorySettingsStore()
         paths = FakePathChecker()
-        lastRecipes = MemoryLastRecipeStore()
         engine = PullEngine(
             secrets: secrets,
             clock: clock,
@@ -28,8 +26,7 @@ final class PullTests: XCTestCase {
             history: history,
             tunnels: tunnels,
             settings: settings,
-            paths: paths,
-            lastRecipes: lastRecipes
+            paths: paths
         )
 
         processes.tablesByDatabase["shop"] = ["users", "orders"]
@@ -734,17 +731,19 @@ final class PullTests: XCTestCase {
         XCTAssertEqual(history.entries.last?.source, "Prod / shop")
     }
 
-    func testSuccessfulPullWithRecipeIdRecordsLastRecipeForTheSourceConnection() async throws {
+    func testSuccessfulPullWithRecipeIdStillRecordsHistoryOnly() async throws {
         let recipeId = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
         var pull = request()
         pull.recipeId = recipeId
 
         _ = try await engine.run(engine.confirm(pull))
 
-        XCTAssertEqual(lastRecipes.lastRecipeId(forSourceConnectionId: source.id), recipeId)
+        XCTAssertEqual(history.entries.count, 1)
+        XCTAssertEqual(history.entries[0].succeeded, true)
+        XCTAssertEqual(history.entries[0].source, "Prod / shop")
     }
 
-    func testFailedPullWithRecipeIdStillRecordsLastRecipeForTheSourceConnection() async {
+    func testFailedPullWithRecipeIdStillRecordsFailedHistoryOnly() async {
         let recipeId = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
         var pull = request()
         pull.recipeId = recipeId
@@ -759,16 +758,8 @@ final class PullTests: XCTestCase {
             XCTFail("wrong error \(error)")
         }
 
-        XCTAssertEqual(lastRecipes.lastRecipeId(forSourceConnectionId: source.id), recipeId)
-    }
-
-    func testOneOffPullDoesNotChangeTheRecordedLastRecipe() async throws {
-        let recipeId = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
-        lastRecipes.record(recipeId: recipeId, forSourceConnectionId: source.id)
-
-        _ = try await engine.run(engine.confirm(request()))
-
-        XCTAssertEqual(lastRecipes.lastRecipeId(forSourceConnectionId: source.id), recipeId)
+        XCTAssertEqual(history.entries.count, 1)
+        XCTAssertEqual(history.entries[0].succeeded, false)
     }
 
     func testListDatabasesRunsShowDatabasesWithSecretsAndClosesTunnel() async throws {
@@ -1409,8 +1400,7 @@ final class RecipeStoreTests: XCTestCase {
             history: history,
             tunnels: FakeSSHTunnel(),
             settings: MemorySettingsStore(),
-            paths: FakePathChecker(),
-            lastRecipes: MemoryLastRecipeStore()
+            paths: FakePathChecker()
         )
         _ = try await engine.run(engine.confirm(pull))
 
@@ -1461,47 +1451,10 @@ final class RecipeStoreTests: XCTestCase {
         XCTAssertEqual(listed.map(\.title), ["Welcome daily"])
     }
 
-    func testLastUsedRecipeIsNoneWhenNeverPulledOrRecipeIsGone() throws {
+    func testPullWithRecipeIdDoesNotPersistLastRecipesOnDisk() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let disk = DiskStore(folder: folder)
-        let lastRecipes = DiskLastRecipeStore(disk: disk)
-        let daily = dailyRecipe()
-
-        XCTAssertNil(
-            Recipe.lastUsed(
-                forSourceConnectionId: sourceId,
-                in: [daily],
-                lastRecipeId: lastRecipes.lastRecipeId(forSourceConnectionId: sourceId)
-            )
-        )
-
-        disk.saveRecipe(daily)
-        lastRecipes.record(recipeId: daily.id, forSourceConnectionId: sourceId)
-        XCTAssertEqual(
-            Recipe.lastUsed(
-                forSourceConnectionId: sourceId,
-                in: disk.loadRecipes(),
-                lastRecipeId: lastRecipes.lastRecipeId(forSourceConnectionId: sourceId)
-            )?.id,
-            daily.id
-        )
-
-        disk.deleteRecipe(id: daily.id)
-        XCTAssertNil(
-            Recipe.lastUsed(
-                forSourceConnectionId: sourceId,
-                in: disk.loadRecipes(),
-                lastRecipeId: lastRecipes.lastRecipeId(forSourceConnectionId: sourceId)
-            )
-        )
-    }
-
-    func testPullWithRecipePersistsLastRecipeAndOneOffLeavesIt() async throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let disk = DiskStore(folder: folder)
-        let lastRecipes = DiskLastRecipeStore(disk: disk)
         let recipe = dailyRecipe()
         var recipeForPull = recipe
         recipeForPull.strategy = .replace
@@ -1524,19 +1477,16 @@ final class RecipeStoreTests: XCTestCase {
             history: MemoryHistoryStore(),
             tunnels: FakeSSHTunnel(),
             settings: MemorySettingsStore(),
-            paths: FakePathChecker(),
-            lastRecipes: lastRecipes
+            paths: FakePathChecker()
         )
 
         let recipePull = recipeForPull.pullRequest(source: source, destination: destination)
         XCTAssertEqual(recipePull.recipeId, recipe.id)
         _ = try await engine.run(engine.confirm(recipePull))
-        XCTAssertEqual(disk.lastRecipeId(forSourceConnectionId: sourceId), recipe.id)
 
-        var oneOff = recipePull
-        oneOff.recipeId = nil
-        _ = try await engine.run(engine.confirm(oneOff))
-        XCTAssertEqual(disk.lastRecipeId(forSourceConnectionId: sourceId), recipe.id)
+        let lastRecipesPath = folder.appendingPathComponent("last-recipes.json").path
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lastRecipesPath))
+        XCTAssertEqual(disk.loadRecipes(), [recipe])
     }
 
     func testEmptyTablesMeansEntireDatabaseAndNamedListIsSelectedTables() {

@@ -62,18 +62,6 @@ nonisolated final class MemoryHistoryStore: HistoryStoring {
     }
 }
 
-nonisolated final class MemoryLastRecipeStore: LastRecipeStoring {
-    private var ids: [UUID: UUID] = [:]
-
-    nonisolated func record(recipeId: UUID, forSourceConnectionId connectionId: UUID) {
-        ids[connectionId] = recipeId
-    }
-
-    nonisolated func lastRecipeId(forSourceConnectionId connectionId: UUID) -> UUID? {
-        ids[connectionId]
-    }
-}
-
 nonisolated final class MemorySettingsStore: SettingsStoring {
     private var settings = ClientSettings.usingPath
 
@@ -119,10 +107,6 @@ nonisolated final class DiskStore {
         folder.appendingPathComponent("recipes.json")
     }
 
-    var lastRecipesFile: URL {
-        folder.appendingPathComponent("last-recipes.json")
-    }
-
     init(folder: URL) {
         self.folder = folder
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -159,10 +143,6 @@ nonisolated final class DiskStore {
         var recipes = loadRecipes()
         recipes.removeAll { $0.sourceConnectionId == id }
         saveRecipes(recipes)
-
-        var lastRecipes = loadLastRecipes()
-        lastRecipes.removeValue(forKey: id.uuidString)
-        saveLastRecipes(lastRecipes)
 
         secrets.deleteSecrets(forConnectionId: id)
     }
@@ -246,36 +226,6 @@ nonisolated final class DiskStore {
         var all = loadRecipes()
         all.removeAll { $0.id == id }
         saveRecipes(all)
-
-        var lastRecipes = loadLastRecipes()
-        lastRecipes = lastRecipes.filter { $0.value != id.uuidString }
-        saveLastRecipes(lastRecipes)
-    }
-
-    func loadLastRecipes() -> [String: String] {
-        guard let data = try? Data(contentsOf: lastRecipesFile) else {
-            return [:]
-        }
-        return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
-    }
-
-    func saveLastRecipes(_ lastRecipes: [String: String]) {
-        if let data = try? JSONEncoder().encode(lastRecipes) {
-            try? data.write(to: lastRecipesFile)
-        }
-    }
-
-    func lastRecipeId(forSourceConnectionId connectionId: UUID) -> UUID? {
-        guard let raw = loadLastRecipes()[connectionId.uuidString] else {
-            return nil
-        }
-        return UUID(uuidString: raw)
-    }
-
-    func recordLastRecipe(id: UUID, forSourceConnectionId connectionId: UUID) {
-        var lastRecipes = loadLastRecipes()
-        lastRecipes[connectionId.uuidString] = id.uuidString
-        saveLastRecipes(lastRecipes)
     }
 }
 
@@ -299,22 +249,6 @@ nonisolated final class DiskHistoryStore: HistoryStoring {
     func clear() {
         entries = []
         disk.saveHistory(entries)
-    }
-}
-
-nonisolated final class DiskLastRecipeStore: LastRecipeStoring {
-    private let disk: DiskStore
-
-    init(disk: DiskStore) {
-        self.disk = disk
-    }
-
-    nonisolated func record(recipeId: UUID, forSourceConnectionId connectionId: UUID) {
-        disk.recordLastRecipe(id: recipeId, forSourceConnectionId: connectionId)
-    }
-
-    nonisolated func lastRecipeId(forSourceConnectionId connectionId: UUID) -> UUID? {
-        disk.lastRecipeId(forSourceConnectionId: connectionId)
     }
 }
 

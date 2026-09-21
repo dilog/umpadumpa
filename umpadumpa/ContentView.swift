@@ -436,11 +436,6 @@ struct ContentView: View {
             tableScope = "all"
             selectedTableNames = []
 
-            if let recipe = model.lastUsedRecipe(forConnectionId: connection.id) {
-                selectedRecipeId = recipe.id.uuidString
-                applyRecipe(recipe)
-            }
-
             loadDatabasesForCurrentEnds(source: connection)
         }
         skipDestinationLoad = false
