@@ -65,6 +65,7 @@ struct ContentView: View {
     @State private var skipDestinationLoad = false
     @State private var showSaveRecipeName = false
     @State private var newRecipeTitle = ""
+    @State private var showOverwriteRecipeConfirm = false
     @State private var connectionToDelete: Connection?
     @State private var showClearHistoryConfirm = false
     @State private var recipeSavedMessage: String?
@@ -99,6 +100,22 @@ struct ContentView: View {
         .sheet(isPresented: $showSaveRecipeName) {
             saveRecipeNameSheet
                 .preferredColorScheme(.light)
+        }
+        .confirmationDialog(
+            "Overwrite Recipe?",
+            isPresented: $showOverwriteRecipeConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Overwrite") {
+                persistSelectedRecipe()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let recipe = selectedRecipe {
+                Text("This replaces “\(recipe.title)” with the current form. You cannot undo it.")
+            } else {
+                Text("This replaces the saved Recipe with the current form. You cannot undo it.")
+            }
         }
         .confirmationDialog(
             "Delete Connection?",
@@ -1031,7 +1048,7 @@ struct ContentView: View {
                         newRecipeTitle = ""
                         showSaveRecipeName = true
                     } else {
-                        persistSelectedRecipe()
+                        showOverwriteRecipeConfirm = true
                     }
                 } label: {
                     Label("Save recipe", systemImage: "square.and.arrow.down")

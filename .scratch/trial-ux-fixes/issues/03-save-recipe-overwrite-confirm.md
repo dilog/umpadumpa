@@ -4,11 +4,15 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] None selected → title sheet → create (unchanged happy path)
-- [ ] Recipe selected → confirm overwrite → Save writes / Cancel aborts
-- [ ] No Save as new while a Recipe is selected
-- [ ] Copy in English
+- [x] None selected → title sheet → create (unchanged happy path)
+- [x] Recipe selected → confirm overwrite → Save writes / Cancel aborts
+- [x] No Save as new while a Recipe is selected
+- [x] Copy in English
+
+## Answer
+
+Save recipe with picker on None still opens the title sheet and creates. With a Recipe selected, “Overwrite Recipe?” confirms before `persistSelectedRecipe()`; Cancel leaves the Recipe unchanged. No Save as new on that path.
 
 ## Comments
