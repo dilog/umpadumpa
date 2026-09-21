@@ -340,15 +340,26 @@ struct ContentView: View {
     }
 
     private var appLogo: some View {
-        VStack(spacing: 10) {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let name = AppVersion.displayName(from: info)
+        let version = AppVersion.marketingVersion(from: info)
+
+        return VStack(spacing: 10) {
             Image("AppLogo")
                 .resizable()
                 .interpolation(.high)
                 .scaledToFit()
                 .frame(width: 96, height: 96)
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            Text("UmpaDumpa")
-                .font(.system(size: 15, weight: .semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(name)
+                    .font(.system(size: 15, weight: .semibold))
+                if !version.isEmpty {
+                    Text(version)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color(red: 0.45, green: 0.50, blue: 0.58))
+                }
+            }
         }
         .frame(maxWidth: .infinity)
     }

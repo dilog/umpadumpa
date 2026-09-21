@@ -164,6 +164,34 @@ enum HistoryDisplay {
     ]
 }
 
+enum AppVersion {
+    static func marketingVersion(from info: [String: Any]) -> String {
+        (info["CFBundleShortVersionString"] as? String) ?? ""
+    }
+
+    static func buildNumber(from info: [String: Any]) -> String {
+        (info["CFBundleVersion"] as? String) ?? ""
+    }
+
+    static func displayName(from info: [String: Any]) -> String {
+        if let name = info["CFBundleDisplayName"] as? String, !name.isEmpty {
+            return name
+        }
+        if let name = info["CFBundleName"] as? String, !name.isEmpty {
+            return name
+        }
+        return ""
+    }
+
+    static func aboutMenuTitle(from info: [String: Any]) -> String {
+        let name = displayName(from: info)
+        if name.isEmpty {
+            return "About"
+        }
+        return "About \(name)"
+    }
+}
+
 enum PullError: Error, Equatable {
     case alreadyRunning
     case dumpFailed(String)

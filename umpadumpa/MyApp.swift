@@ -17,6 +17,13 @@ import AppKit
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 980, height: 840)
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button(AppVersion.aboutMenuTitle(from: Bundle.main.infoDictionary ?? [:])) {
+                    NSApplication.shared.orderFrontStandardAboutPanel(options: aboutPanelOptions())
+                }
+            }
+        }
         #else
         WindowGroup {
             ContentView(model: model)
@@ -24,4 +31,28 @@ import AppKit
         }
         #endif
     }
+
+    #if os(macOS)
+    private func aboutPanelOptions() -> [NSApplication.AboutPanelOptionKey: Any] {
+        let info = Bundle.main.infoDictionary ?? [:]
+        var options: [NSApplication.AboutPanelOptionKey: Any] = [:]
+
+        let name = AppVersion.displayName(from: info)
+        if !name.isEmpty {
+            options[.applicationName] = name
+        }
+
+        let version = AppVersion.marketingVersion(from: info)
+        if !version.isEmpty {
+            options[.applicationVersion] = version
+        }
+
+        let build = AppVersion.buildNumber(from: info)
+        if !build.isEmpty {
+            options[.version] = build
+        }
+
+        return options
+    }
+    #endif
 }

@@ -1664,3 +1664,51 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(disk.loadHistory().isEmpty)
     }
 }
+
+final class AppVersionTests: XCTestCase {
+    func testMarketingVersionComesFromShortVersionString() {
+        let info: [String: Any] = [
+            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleVersion": "2",
+            "CFBundleDisplayName": "UmpaDumpa"
+        ]
+
+        XCTAssertEqual(AppVersion.marketingVersion(from: info), "1.0.0")
+    }
+
+    func testBuildNumberComesFromBundleVersion() {
+        let info: [String: Any] = [
+            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleVersion": "2"
+        ]
+
+        XCTAssertEqual(AppVersion.buildNumber(from: info), "2")
+    }
+
+    func testDisplayNamePrefersDisplayNameThenBundleName() {
+        XCTAssertEqual(
+            AppVersion.displayName(from: [
+                "CFBundleDisplayName": "UmpaDumpa",
+                "CFBundleName": "umpadumpa"
+            ]),
+            "UmpaDumpa"
+        )
+        XCTAssertEqual(
+            AppVersion.displayName(from: [
+                "CFBundleName": "UmpaDumpa"
+            ]),
+            "UmpaDumpa"
+        )
+    }
+
+    func testAboutMenuTitleUsesDisplayName() {
+        let info: [String: Any] = ["CFBundleDisplayName": "UmpaDumpa"]
+
+        XCTAssertEqual(AppVersion.aboutMenuTitle(from: info), "About UmpaDumpa")
+    }
+
+    func testMissingKeysAreEmptyStringsNotHardCodedVersions() {
+        XCTAssertEqual(AppVersion.marketingVersion(from: [:]), "")
+        XCTAssertEqual(AppVersion.buildNumber(from: [:]), "")
+    }
+}
