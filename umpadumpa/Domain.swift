@@ -152,6 +152,16 @@ struct HistoryEntry: Identifiable, Codable, Equatable {
     var source: String
     var destination: String
     var succeeded: Bool
+
+    var resultLabel: String {
+        succeeded ? "OK" : "Failed"
+    }
+}
+
+enum HistoryDisplay {
+    static let defaultSortOrder = [
+        KeyPathComparator(\HistoryEntry.when, order: .reverse)
+    ]
 }
 
 enum PullError: Error, Equatable {

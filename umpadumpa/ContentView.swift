@@ -68,6 +68,7 @@ struct ContentView: View {
     @State private var showOverwriteRecipeConfirm = false
     @State private var connectionToDelete: Connection?
     @State private var showClearHistoryConfirm = false
+    @State private var historySortOrder = HistoryDisplay.defaultSortOrder
     @State private var recipeSavedMessage: String?
     @State private var recipeSavedClearTask: Task<Void, Never>?
 
@@ -498,23 +499,19 @@ struct ContentView: View {
                 Text("This removes the whole History log. You cannot undo it.")
             }
 
-            Table(model.history) {
-                TableColumn("When") { row in
+            Table(model.history, sortOrder: $historySortOrder) {
+                TableColumn("When", value: \.when) { row in
                     Text(row.when.formatted(date: .abbreviated, time: .shortened))
                 }
                 .width(min: 110, ideal: 140)
 
-                TableColumn("Source") { row in
-                    Text(row.source)
-                }
+                TableColumn("Source", value: \.source)
 
-                TableColumn("Destination") { row in
-                    Text(row.destination)
-                }
+                TableColumn("Destination", value: \.destination)
 
-                TableColumn("Result") { row in
+                TableColumn("Result", value: \.resultLabel) { row in
                     Label(
-                        row.succeeded ? "OK" : "Failed",
+                        row.resultLabel,
                         systemImage: row.succeeded ? "checkmark.circle.fill" : "xmark.circle.fill"
                     )
                     .foregroundStyle(

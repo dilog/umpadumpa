@@ -1521,6 +1521,101 @@ final class RecipeStoreTests: XCTestCase {
     }
 }
 
+final class HistoryDisplayTests: XCTestCase {
+    func testDefaultOrderIsWhenDescending() {
+        let older = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 1),
+            source: "Prod / shop",
+            destination: "Localhost / local_shop",
+            succeeded: true
+        )
+        let newer = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 2),
+            source: "Staging / shop",
+            destination: "Localhost / local_shop",
+            succeeded: false
+        )
+
+        let displayed = [older, newer].sorted(using: HistoryDisplay.defaultSortOrder)
+
+        XCTAssertEqual(displayed.map(\.when), [
+            Date(timeIntervalSince1970: 2),
+            Date(timeIntervalSince1970: 1)
+        ])
+    }
+
+    func testSortBySourceAscending() {
+        let beta = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 1),
+            source: "Beta / shop",
+            destination: "Localhost / a",
+            succeeded: true
+        )
+        let alpha = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 2),
+            source: "Alpha / shop",
+            destination: "Localhost / b",
+            succeeded: false
+        )
+
+        let displayed = [beta, alpha].sorted(
+            using: [KeyPathComparator(\HistoryEntry.source, order: .forward)]
+        )
+
+        XCTAssertEqual(displayed.map(\.source), ["Alpha / shop", "Beta / shop"])
+    }
+
+    func testSortByDestinationAscending() {
+        let second = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 1),
+            source: "Prod / shop",
+            destination: "Localhost / b",
+            succeeded: true
+        )
+        let first = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 2),
+            source: "Prod / shop",
+            destination: "Localhost / a",
+            succeeded: false
+        )
+
+        let displayed = [second, first].sorted(
+            using: [KeyPathComparator(\HistoryEntry.destination, order: .forward)]
+        )
+
+        XCTAssertEqual(displayed.map(\.destination), ["Localhost / a", "Localhost / b"])
+    }
+
+    func testSortByResultAscendingPutsFailedBeforeOk() {
+        let ok = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 1),
+            source: "Prod / shop",
+            destination: "Localhost / local_shop",
+            succeeded: true
+        )
+        let failed = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 2),
+            source: "Prod / shop",
+            destination: "Localhost / local_shop",
+            succeeded: false
+        )
+
+        let displayed = [ok, failed].sorted(
+            using: [KeyPathComparator(\HistoryEntry.resultLabel, order: .forward)]
+        )
+
+        XCTAssertEqual(displayed.map(\.resultLabel), ["Failed", "OK"])
+    }
+}
+
 final class HistoryStoreTests: XCTestCase {
     func testHistoryAppendKeepsOnlyTheNewest100Rows() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

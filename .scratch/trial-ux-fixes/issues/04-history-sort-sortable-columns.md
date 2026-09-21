@@ -4,10 +4,14 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Default order: When descending
-- [ ] Columns sortable via headers
-- [ ] Cap / clear-all / no row delete / not re-runnable unchanged
+- [x] Default order: When descending
+- [x] Columns sortable via headers
+- [x] Cap / clear-all / no row delete / not re-runnable unchanged
+
+## Answer
+
+History table uses SwiftUI `sortOrder` initialized to When descending (`HistoryDisplay.defaultSortOrder`). When, Source, Destination, and Result headers are sortable (`resultLabel` for Result). Store cap, clear-all, and log-only rows are unchanged.
 
 ## Comments
