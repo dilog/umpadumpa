@@ -83,13 +83,41 @@ struct ContentView: View {
             confirmSheet
                 .preferredColorScheme(.light)
         }
-        .sheet(isPresented: $model.showNewConnection) {
+        .sheet(isPresented: Binding(
+            get: { model.showNewConnection },
+            set: { showing in
+                if showing {
+                    model.showNewConnection = true
+                } else {
+                    model.cancelConnectionForm()
+                }
+            }
+        )) {
             newConnectionSheet
                 .preferredColorScheme(.light)
         }
         .sheet(isPresented: $showSaveRecipeName) {
             saveRecipeNameSheet
                 .preferredColorScheme(.light)
+        }
+        .confirmationDialog(
+            "Delete Connection?",
+            isPresented: Binding(
+                get: { connectionToDelete != nil },
+                set: { if $0 == false { connectionToDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                confirmDeleteConnection()
+            }
+            Button("Cancel", role: .cancel) {
+                connectionToDelete = nil
+            }
+        } message: {
+            if let connection = connectionToDelete {
+                Text("This removes \(connection.name), its Keychain secrets, and Recipes that use it as source. History is not changed.")
+            }
         }
         .onAppear {
             if selectedNav.isEmpty, let first = model.connections.first {
@@ -271,7 +299,7 @@ struct ContentView: View {
             .frame(maxHeight: .infinity)
 
             Button {
-                model.showNewConnection = true
+                model.beginNewConnection()
             } label: {
                 Label("New Connection", systemImage: "plus")
                     .font(.system(size: 13))
@@ -291,25 +319,6 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .frame(width: 230)
         .background(Color(red: 0.965, green: 0.973, blue: 0.984))
-        .confirmationDialog(
-            "Delete Connection?",
-            isPresented: Binding(
-                get: { connectionToDelete != nil },
-                set: { if $0 == false { connectionToDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                confirmDeleteConnection()
-            }
-            Button("Cancel", role: .cancel) {
-                connectionToDelete = nil
-            }
-        } message: {
-            if let connection = connectionToDelete {
-                Text("This removes \(connection.name), its Keychain secrets, and Recipes that use it as source. History is not changed.")
-            }
-        }
     }
 
     private var appLogo: some View {
@@ -331,39 +340,33 @@ struct ContentView: View {
         let isSelected = selectedNav == id
         let icon = connection.name.lowercased() == "localhost" ? "laptopcomputer" : "externaldrive.fill"
 
-        return HStack(spacing: 4) {
-            Button {
-                selectNav(id)
-            } label: {
-                Label(connection.name, systemImage: icon)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(
-                        isSelected
-                            ? Color(red: 0.15, green: 0.42, blue: 0.95)
-                            : Color(red: 0.35, green: 0.40, blue: 0.48)
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isSelected ? Color(red: 0.86, green: 0.92, blue: 1.0) : Color.clear)
-                    )
+        return Button {
+            selectNav(id)
+        } label: {
+            Label(connection.name, systemImage: icon)
+                .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(
+                    isSelected
+                        ? Color(red: 0.15, green: 0.42, blue: 0.95)
+                        : Color(red: 0.35, green: 0.40, blue: 0.48)
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(isSelected ? Color(red: 0.86, green: 0.92, blue: 1.0) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .labelStyle(.titleAndIcon)
+        .contextMenu {
+            Button("Edit…") {
+                model.beginEditConnection(connection)
             }
-            .buttonStyle(.plain)
-            .labelStyle(.titleAndIcon)
-
-            Button {
+            Button("Delete…", role: .destructive) {
                 connectionToDelete = connection
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color(red: 0.62, green: 0.38, blue: 0.38))
-                    .padding(.trailing, 8)
             }
-            .buttonStyle(.plain)
-            .help("Delete Connection")
-            .accessibilityLabel("Delete \(connection.name)")
         }
     }
 
@@ -1232,8 +1235,10 @@ struct ContentView: View {
     }
 
     private var newConnectionSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("New Connection")
+        let isEditing = model.editingConnectionId != nil
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(isEditing ? "Edit Connection" : "New Connection")
                 .font(.system(size: 20, weight: .bold))
 
             TextField("Name", text: $model.newName)
@@ -1271,11 +1276,26 @@ struct ContentView: View {
             }
 
             HStack {
+                if isEditing {
+                    Button("Delete…", role: .destructive) {
+                        if let id = model.editingConnectionId,
+                           let connection = model.connections.first(where: { $0.id == id }) {
+                            model.cancelConnectionForm()
+                            connectionToDelete = connection
+                        }
+                    }
+                }
                 Spacer()
-                Button("Cancel") { model.showNewConnection = false }
+                Button("Cancel") {
+                    model.cancelConnectionForm()
+                }
                 Button("Save") {
-                    let connection = model.addConnection()
-                    selectNav(connection.id.uuidString)
+                    if isEditing {
+                        _ = model.updateConnectionFromForm()
+                    } else {
+                        let connection = model.addConnection()
+                        selectNav(connection.id.uuidString)
+                    }
                 }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.newName.isEmpty || model.newHost.isEmpty || model.newUser.isEmpty)

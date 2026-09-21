@@ -1185,6 +1185,178 @@ final class ConnectionStoreTests: XCTestCase {
         store.saveConnection(appended)
         XCTAssertEqual(store.loadConnections().map(\.id), [third.id, first.id, second.id, appended.id])
     }
+
+    func testUpdatingConnectionKeepsPasswordWhenEditPasswordIsBlank() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let secrets = MemorySecretStore()
+        let store = DiskStore(folder: folder)
+
+        let original = Connection(
+            id: UUID(),
+            name: "Prod",
+            host: "prod.example",
+            port: 3306,
+            user: "dump"
+        )
+        store.saveConnection(original)
+        secrets.setPassword("hunter2", forConnectionId: original.id)
+
+        let edited = Connection(
+            id: original.id,
+            name: "Prod renamed",
+            host: "prod-new.example",
+            port: 3307,
+            user: "reader"
+        )
+        store.updateConnection(
+            edited,
+            secrets: secrets,
+            password: "",
+            sshPassword: "",
+            sshPassphrase: ""
+        )
+
+        XCTAssertEqual(store.loadConnections(), [edited])
+        XCTAssertEqual(secrets.password(forConnectionId: original.id), "hunter2")
+    }
+
+    func testUpdatingConnectionReplacesPasswordWhenEditPasswordIsSet() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let secrets = MemorySecretStore()
+        let store = DiskStore(folder: folder)
+
+        let original = Connection(
+            id: UUID(),
+            name: "Prod",
+            host: "prod.example",
+            port: 3306,
+            user: "dump"
+        )
+        store.saveConnection(original)
+        secrets.setPassword("hunter2", forConnectionId: original.id)
+
+        let edited = Connection(
+            id: original.id,
+            name: "Prod",
+            host: "prod.example",
+            port: 3306,
+            user: "dump"
+        )
+        store.updateConnection(
+            edited,
+            secrets: secrets,
+            password: "new-secret",
+            sshPassword: "",
+            sshPassphrase: ""
+        )
+
+        XCTAssertEqual(store.loadConnections(), [edited])
+        XCTAssertEqual(secrets.password(forConnectionId: original.id), "new-secret")
+    }
+
+    func testUpdatingSSHConnectionKeepsOrReplacesSecretsByBlankOrFilledFields() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let secrets = MemorySecretStore()
+        let store = DiskStore(folder: folder)
+
+        let original = Connection(
+            id: UUID(),
+            name: "Prod SSH",
+            host: "10.0.0.8",
+            port: 3306,
+            user: "dump",
+            usesSSH: true,
+            sshHost: "bastion.example",
+            sshPort: 2222,
+            sshUser: "jump",
+            sshAuthMethod: .password,
+            sshKeyPath: ""
+        )
+        store.saveConnection(original)
+        secrets.setPassword("mysql-secret", forConnectionId: original.id)
+        secrets.setSSHPassword("ssh-secret", forConnectionId: original.id)
+
+        let hostOnly = Connection(
+            id: original.id,
+            name: "Prod SSH",
+            host: "10.0.0.9",
+            port: 3306,
+            user: "dump",
+            usesSSH: true,
+            sshHost: "bastion2.example",
+            sshPort: 2222,
+            sshUser: "jump",
+            sshAuthMethod: .password,
+            sshKeyPath: ""
+        )
+        store.updateConnection(
+            hostOnly,
+            secrets: secrets,
+            password: "",
+            sshPassword: "",
+            sshPassphrase: ""
+        )
+        XCTAssertEqual(secrets.password(forConnectionId: original.id), "mysql-secret")
+        XCTAssertEqual(secrets.sshPassword(forConnectionId: original.id), "ssh-secret")
+
+        let withNewSSHPassword = Connection(
+            id: original.id,
+            name: "Prod SSH",
+            host: "10.0.0.9",
+            port: 3306,
+            user: "dump",
+            usesSSH: true,
+            sshHost: "bastion2.example",
+            sshPort: 2222,
+            sshUser: "jump",
+            sshAuthMethod: .password,
+            sshKeyPath: ""
+        )
+        store.updateConnection(
+            withNewSSHPassword,
+            secrets: secrets,
+            password: "",
+            sshPassword: "ssh-new",
+            sshPassphrase: ""
+        )
+        XCTAssertEqual(secrets.password(forConnectionId: original.id), "mysql-secret")
+        XCTAssertEqual(secrets.sshPassword(forConnectionId: original.id), "ssh-new")
+
+        let keyAuth = Connection(
+            id: original.id,
+            name: "Prod SSH",
+            host: "10.0.0.9",
+            port: 3306,
+            user: "dump",
+            usesSSH: true,
+            sshHost: "bastion2.example",
+            sshPort: 2222,
+            sshUser: "jump",
+            sshAuthMethod: .privateKey,
+            sshKeyPath: "/Users/me/keys/prod.pem"
+        )
+        secrets.setSSHPassphrase("old-phrase", forConnectionId: original.id)
+        store.updateConnection(
+            keyAuth,
+            secrets: secrets,
+            password: "",
+            sshPassword: "",
+            sshPassphrase: ""
+        )
+        XCTAssertEqual(secrets.sshPassphrase(forConnectionId: original.id), "old-phrase")
+
+        store.updateConnection(
+            keyAuth,
+            secrets: secrets,
+            password: "",
+            sshPassword: "",
+            sshPassphrase: "new-phrase"
+        )
+        XCTAssertEqual(secrets.sshPassphrase(forConnectionId: original.id), "new-phrase")
+    }
 }
 
 final class RecipeStoreTests: XCTestCase {

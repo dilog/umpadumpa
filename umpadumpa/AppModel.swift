@@ -20,6 +20,7 @@ final class AppModel {
     var destinationDatabase: String = ""
     var showConfirm = false
     var showNewConnection = false
+    var editingConnectionId: UUID?
     var pullError: String?
     var isPulling = false
     var pullPhase: PullPhase = .idle
@@ -172,7 +173,72 @@ final class AppModel {
         }
         connections = disk.loadConnections()
         selectedNav = connection.id.uuidString
+        clearConnectionForm()
+        return connection
+    }
+
+    func beginNewConnection() {
+        clearConnectionForm()
+        showNewConnection = true
+    }
+
+    func beginEditConnection(_ connection: Connection) {
+        editingConnectionId = connection.id
+        newName = connection.name
+        newHost = connection.host
+        newPort = String(connection.port)
+        newUser = connection.user
+        newPassword = ""
+        newUsesSSH = connection.usesSSH
+        newSSHHost = connection.sshHost
+        newSSHPort = String(connection.sshPort)
+        newSSHUser = connection.sshUser
+        newSSHAuth = connection.sshAuthMethod.rawValue
+        newSSHKeyPath = connection.sshKeyPath
+        newSSHPassword = ""
+        newSSHPassphrase = ""
+        showNewConnection = true
+    }
+
+    func updateConnectionFromForm() -> Connection? {
+        guard let editingConnectionId else {
+            return nil
+        }
+        let port = Int(newPort) ?? 3306
+        let sshPort = Int(newSSHPort) ?? 22
+        let auth = SSHAuthMethod(rawValue: newSSHAuth) ?? .password
+        let connection = Connection(
+            id: editingConnectionId,
+            name: newName,
+            host: newHost,
+            port: port,
+            user: newUser,
+            usesSSH: newUsesSSH,
+            sshHost: newSSHHost,
+            sshPort: sshPort,
+            sshUser: newSSHUser,
+            sshAuthMethod: auth,
+            sshKeyPath: newSSHKeyPath
+        )
+        disk.updateConnection(
+            connection,
+            secrets: secrets,
+            password: newPassword,
+            sshPassword: newSSHPassword,
+            sshPassphrase: newSSHPassphrase
+        )
+        connections = disk.loadConnections()
+        clearConnectionForm()
+        return connection
+    }
+
+    func cancelConnectionForm() {
+        clearConnectionForm()
+    }
+
+    private func clearConnectionForm() {
         showNewConnection = false
+        editingConnectionId = nil
         newName = ""
         newHost = ""
         newPort = "3306"
@@ -186,7 +252,6 @@ final class AppModel {
         newSSHKeyPath = ""
         newSSHPassword = ""
         newSSHPassphrase = ""
-        return connection
     }
 
     func deleteConnection(id: UUID) {
@@ -199,6 +264,9 @@ final class AppModel {
         if destinationConnectionId == id {
             destinationConnectionId = connections.first { $0.name.lowercased() == "localhost" }?.id
                 ?? connections.first?.id
+        }
+        if editingConnectionId == id {
+            clearConnectionForm()
         }
     }
 

@@ -167,6 +167,32 @@ nonisolated final class DiskStore {
         secrets.deleteSecrets(forConnectionId: id)
     }
 
+    func updateConnection(
+        _ connection: Connection,
+        secrets: SecretStoring,
+        password: String,
+        sshPassword: String,
+        sshPassphrase: String
+    ) {
+        saveConnection(connection)
+
+        if password.isEmpty == false {
+            secrets.setPassword(password, forConnectionId: connection.id)
+        }
+
+        if connection.usesSSH {
+            if connection.sshAuthMethod == .password {
+                if sshPassword.isEmpty == false {
+                    secrets.setSSHPassword(sshPassword, forConnectionId: connection.id)
+                }
+            } else {
+                if sshPassphrase.isEmpty == false {
+                    secrets.setSSHPassphrase(sshPassphrase, forConnectionId: connection.id)
+                }
+            }
+        }
+    }
+
     func loadHistory() -> [HistoryEntry] {
         guard let data = try? Data(contentsOf: historyFile) else {
             return []
