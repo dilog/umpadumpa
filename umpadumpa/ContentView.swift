@@ -319,11 +319,12 @@ struct ContentView: View {
             Button {
                 model.beginNewConnection()
             } label: {
-                Label("New Connection", systemImage: "plus")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                sidebarRowContent(
+                    title: "New Connection",
+                    icon: "plus",
+                    isSelected: false,
+                    color: Color(red: 0.15, green: 0.42, blue: 0.95)
+                )
             }
             .buttonStyle(.plain)
             .padding(.top, 4)
@@ -372,26 +373,17 @@ struct ContentView: View {
         return Button {
             selectNav(id)
         } label: {
-            Label(connection.name, systemImage: icon)
-                .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                .foregroundStyle(
-                    isSelected
-                        ? Color(red: 0.15, green: 0.42, blue: 0.95)
-                        : Color(red: 0.35, green: 0.40, blue: 0.48)
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isSelected ? Color(red: 0.86, green: 0.92, blue: 1.0) : Color.clear)
-                )
+            sidebarRowContent(title: connection.name, icon: icon, isSelected: isSelected)
         }
         .buttonStyle(.plain)
-        .labelStyle(.titleAndIcon)
         .contextMenu {
             Button("Edit…") {
                 model.beginEditConnection(connection)
+            }
+            Button("Duplicate") {
+                if let copy = model.duplicateConnection(id: connection.id) {
+                    selectNav(copy.id.uuidString)
+                }
             }
             Button("Delete…", role: .destructive) {
                 connectionToDelete = connection
@@ -428,23 +420,38 @@ struct ContentView: View {
         return Button {
             selectNav(id)
         } label: {
-            Label(title, systemImage: icon)
-                .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                .foregroundStyle(
-                    isSelected
-                        ? Color(red: 0.15, green: 0.42, blue: 0.95)
-                        : Color(red: 0.35, green: 0.40, blue: 0.48)
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isSelected ? Color(red: 0.86, green: 0.92, blue: 1.0) : Color.clear)
-                )
+            sidebarRowContent(title: title, icon: icon, isSelected: isSelected)
         }
         .buttonStyle(.plain)
-        .labelStyle(.titleAndIcon)
+    }
+
+    /// Fixed icon column so Connection / History / Settings labels share one left edge.
+    private func sidebarRowContent(
+        title: String,
+        icon: String,
+        isSelected: Bool,
+        color: Color? = nil
+    ) -> some View {
+        let textColor = color
+            ?? (isSelected
+                ? Color(red: 0.15, green: 0.42, blue: 0.95)
+                : Color(red: 0.35, green: 0.40, blue: 0.48))
+
+        return HStack(spacing: 8) {
+            Image(systemName: icon)
+                .frame(width: 20, alignment: .center)
+            Text(title)
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+        .foregroundStyle(textColor)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isSelected ? Color(red: 0.86, green: 0.92, blue: 1.0) : Color.clear)
+        )
     }
 
     private func selectNav(_ id: String) {
@@ -510,7 +517,10 @@ struct ContentView: View {
                 Text("This removes the whole History log. You cannot undo it.")
             }
 
-            Table(model.history, sortOrder: $historySortOrder) {
+            Table(
+                HistoryDisplay.sorted(model.history, by: historySortOrder),
+                sortOrder: $historySortOrder
+            ) {
                 TableColumn("When", value: \.when) { row in
                     Text(row.when.formatted(date: .abbreviated, time: .shortened))
                 }
@@ -592,19 +602,28 @@ struct ContentView: View {
 
                         Spacer(minLength: 8)
 
-                        if selectedRecipeId != "" {
-                            Button(action: duplicateSelectedRecipe) {
-                                Label("Duplicate", systemImage: "plus.square.on.square")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.extraLarge)
-
-                            Button(action: deleteSelectedRecipe) {
-                                Label("Delete", systemImage: "trash")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.extraLarge)
+                        // Keep Duplicate / Delete in the layout when None is
+                        // selected so the Recipe card does not jump taller.
+                        let recipeActionsVisible = selectedRecipeId != ""
+                        Button(action: duplicateSelectedRecipe) {
+                            Label("Duplicate", systemImage: "plus.square.on.square")
                         }
+                        .buttonStyle(.bordered)
+                        .controlSize(.extraLarge)
+                        .opacity(recipeActionsVisible ? 1 : 0)
+                        .disabled(recipeActionsVisible == false)
+                        .allowsHitTesting(recipeActionsVisible)
+                        .accessibilityHidden(recipeActionsVisible == false)
+
+                        Button(action: deleteSelectedRecipe) {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.extraLarge)
+                        .opacity(recipeActionsVisible ? 1 : 0)
+                        .disabled(recipeActionsVisible == false)
+                        .allowsHitTesting(recipeActionsVisible)
+                        .accessibilityHidden(recipeActionsVisible == false)
                     }
                 }
             }

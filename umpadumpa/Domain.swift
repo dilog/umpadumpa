@@ -70,6 +70,13 @@ struct Connection: Identifiable, Codable, Equatable {
         }
         return "\(host):\(port)"
     }
+
+    func duplicated() -> Connection {
+        var copy = self
+        copy.id = UUID()
+        copy.name = name + " (copy)"
+        return copy
+    }
 }
 
 struct OpenTunnel: Equatable {
@@ -162,6 +169,16 @@ enum HistoryDisplay {
     static let defaultSortOrder = [
         KeyPathComparator(\HistoryEntry.when, order: .reverse)
     ]
+
+    /// Rows as the History table should show them for the current header sort.
+    /// SwiftUI Table updates `sortOrder` from clicks but does not re-order the
+    /// collection itself — callers must pass this sorted list into `Table`.
+    static func sorted(
+        _ entries: [HistoryEntry],
+        by sortOrder: [KeyPathComparator<HistoryEntry>]
+    ) -> [HistoryEntry] {
+        entries.sorted(using: sortOrder)
+    }
 }
 
 enum AppVersion {

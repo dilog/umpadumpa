@@ -1034,6 +1034,135 @@ final class SettingsStoreTests: XCTestCase {
 }
 
 final class ConnectionStoreTests: XCTestCase {
+    func testDuplicatedConnectionGetsNewIdCopySuffixAndSameReachabilityFields() {
+        let original = Connection(
+            id: UUID(),
+            name: "Prod",
+            host: "prod.example",
+            port: 3307,
+            user: "dump",
+            usesSSH: true,
+            sshHost: "bastion.example",
+            sshPort: 2222,
+            sshUser: "jump",
+            sshAuthMethod: .privateKey,
+            sshKeyPath: "/Users/me/keys/prod.pem"
+        )
+
+        let copy = original.duplicated()
+
+        XCTAssertNotEqual(copy.id, original.id)
+        XCTAssertEqual(copy.name, "Prod (copy)")
+        XCTAssertEqual(copy.host, original.host)
+        XCTAssertEqual(copy.port, original.port)
+        XCTAssertEqual(copy.user, original.user)
+        XCTAssertEqual(copy.usesSSH, original.usesSSH)
+        XCTAssertEqual(copy.sshHost, original.sshHost)
+        XCTAssertEqual(copy.sshPort, original.sshPort)
+        XCTAssertEqual(copy.sshUser, original.sshUser)
+        XCTAssertEqual(copy.sshAuthMethod, original.sshAuthMethod)
+        XCTAssertEqual(copy.sshKeyPath, original.sshKeyPath)
+    }
+
+    func testDuplicatingAConnectionAppendsCopyWithSecretsAndLeavesRecipesAndHistory() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let secrets = MemorySecretStore()
+        let disk = DiskStore(folder: folder)
+        let history = DiskHistoryStore(disk: disk)
+
+        let other = Connection(id: UUID(), name: "Localhost", host: "127.0.0.1", port: 3306, user: "root")
+        let source = Connection(
+            id: UUID(),
+            name: "Prod",
+            host: "prod.example",
+            port: 3306,
+            user: "dump",
+            usesSSH: true,
+            sshHost: "bastion.example",
+            sshPort: 22,
+            sshUser: "jump",
+            sshAuthMethod: .password
+        )
+        disk.saveConnection(other)
+        disk.saveConnection(source)
+        secrets.setPassword("prod-pass", forConnectionId: source.id)
+        secrets.setSSHPassword("ssh-pass", forConnectionId: source.id)
+        secrets.setPassword("local-pass", forConnectionId: other.id)
+
+        let recipe = Recipe(
+            id: UUID(),
+            title: "Prod daily",
+            sourceConnectionId: source.id,
+            sourceDatabase: "shop",
+            destinationConnectionId: other.id,
+            destinationDatabase: "local_shop",
+            strategy: .replace,
+            replaceMode: .importInPlace,
+            tables: []
+        )
+        disk.saveRecipe(recipe)
+        history.append(
+            HistoryEntry(
+                id: UUID(),
+                when: Date(timeIntervalSince1970: 1),
+                source: "Prod / shop",
+                destination: "Localhost / local_shop",
+                succeeded: true
+            )
+        )
+
+        let copy = try XCTUnwrap(disk.duplicateConnection(id: source.id, secrets: secrets))
+
+        XCTAssertEqual(copy.name, "Prod (copy)")
+        XCTAssertNotEqual(copy.id, source.id)
+        XCTAssertEqual(disk.loadConnections().map(\.id), [other.id, source.id, copy.id])
+        XCTAssertEqual(secrets.password(forConnectionId: copy.id), "prod-pass")
+        XCTAssertEqual(secrets.sshPassword(forConnectionId: copy.id), "ssh-pass")
+        XCTAssertEqual(secrets.password(forConnectionId: source.id), "prod-pass")
+        XCTAssertEqual(secrets.sshPassword(forConnectionId: source.id), "ssh-pass")
+        XCTAssertEqual(disk.loadRecipes(), [recipe])
+        XCTAssertEqual(history.entries.count, 1)
+
+        disk.deleteConnection(id: source.id, secrets: secrets)
+        XCTAssertEqual(disk.loadConnections().map(\.id), [other.id, copy.id])
+        XCTAssertEqual(secrets.password(forConnectionId: copy.id), "prod-pass")
+        XCTAssertEqual(secrets.sshPassword(forConnectionId: copy.id), "ssh-pass")
+        XCTAssertNil(secrets.password(forConnectionId: source.id))
+    }
+
+    func testDuplicatingPrivateKeyConnectionCopiesSSHPassphrase() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let secrets = MemorySecretStore()
+        let disk = DiskStore(folder: folder)
+
+        let source = Connection(
+            id: UUID(),
+            name: "Prod SSH",
+            host: "10.0.0.8",
+            port: 3306,
+            user: "dump",
+            usesSSH: true,
+            sshHost: "bastion.example",
+            sshPort: 2222,
+            sshUser: "jump",
+            sshAuthMethod: .privateKey,
+            sshKeyPath: "/Users/me/keys/prod.pem"
+        )
+        disk.saveConnection(source)
+        secrets.setPassword("mysql-secret", forConnectionId: source.id)
+        secrets.setSSHPassphrase("pem-phrase", forConnectionId: source.id)
+
+        let copy = try XCTUnwrap(disk.duplicateConnection(id: source.id, secrets: secrets))
+
+        XCTAssertEqual(copy.sshAuthMethod, .privateKey)
+        XCTAssertEqual(copy.sshKeyPath, "/Users/me/keys/prod.pem")
+        XCTAssertEqual(secrets.password(forConnectionId: copy.id), "mysql-secret")
+        XCTAssertEqual(secrets.sshPassphrase(forConnectionId: copy.id), "pem-phrase")
+        XCTAssertEqual(secrets.sshPassphrase(forConnectionId: source.id), "pem-phrase")
+    }
+
     func testSavedConnectionKeepsPasswordInSecretsNotOnDisk() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1538,12 +1667,39 @@ final class HistoryDisplayTests: XCTestCase {
             succeeded: false
         )
 
-        let displayed = [older, newer].sorted(using: HistoryDisplay.defaultSortOrder)
+        let displayed = HistoryDisplay.sorted(
+            [older, newer],
+            by: HistoryDisplay.defaultSortOrder
+        )
 
         XCTAssertEqual(displayed.map(\.when), [
             Date(timeIntervalSince1970: 2),
             Date(timeIntervalSince1970: 1)
         ])
+    }
+
+    func testSortedUsesThePassedSortOrderNotOnlyTheDefault() {
+        let beta = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 1),
+            source: "Beta / shop",
+            destination: "Localhost / a",
+            succeeded: true
+        )
+        let alpha = HistoryEntry(
+            id: UUID(),
+            when: Date(timeIntervalSince1970: 2),
+            source: "Alpha / shop",
+            destination: "Localhost / b",
+            succeeded: false
+        )
+
+        let bySource = HistoryDisplay.sorted(
+            [beta, alpha],
+            by: [KeyPathComparator(\HistoryEntry.source, order: .forward)]
+        )
+
+        XCTAssertEqual(bySource.map(\.source), ["Alpha / shop", "Beta / shop"])
     }
 
     func testSortBySourceAscending() {

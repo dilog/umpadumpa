@@ -173,6 +173,27 @@ nonisolated final class DiskStore {
         }
     }
 
+    func duplicateConnection(id: UUID, secrets: SecretStoring) -> Connection? {
+        guard let original = loadConnections().first(where: { $0.id == id }) else {
+            return nil
+        }
+
+        let copy = original.duplicated()
+        saveConnection(copy)
+
+        if let password = secrets.password(forConnectionId: id) {
+            secrets.setPassword(password, forConnectionId: copy.id)
+        }
+        if let sshPassword = secrets.sshPassword(forConnectionId: id) {
+            secrets.setSSHPassword(sshPassword, forConnectionId: copy.id)
+        }
+        if let sshPassphrase = secrets.sshPassphrase(forConnectionId: id) {
+            secrets.setSSHPassphrase(sshPassphrase, forConnectionId: copy.id)
+        }
+
+        return copy
+    }
+
     func loadHistory() -> [HistoryEntry] {
         guard let data = try? Data(contentsOf: historyFile) else {
             return []

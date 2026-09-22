@@ -258,6 +258,14 @@ final class AppModel {
         }
     }
 
+    func duplicateConnection(id: UUID) -> Connection? {
+        guard let copy = disk.duplicateConnection(id: id, secrets: secrets) else {
+            return nil
+        }
+        connections = disk.loadConnections()
+        return copy
+    }
+
     func moveConnections(fromOffsets: IndexSet, toOffset: Int) {
         connections.move(fromOffsets: fromOffsets, toOffset: toOffset)
         disk.saveConnections(connections)
