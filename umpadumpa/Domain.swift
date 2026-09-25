@@ -233,6 +233,8 @@ struct PullProgress: Equatable {
     var tablesReached: Int
     var tablesTotal: Int
     var dumpFileMegabytes: Int?
+    var bytesSent: Int
+    var bytesTotal: Int
 }
 
 enum ClientTool: Equatable {
@@ -333,13 +335,21 @@ protocol Clock {
 protocol ProcessRunning: AnyObject {
     func run(
         _ command: ExternalCommand,
-        onStandardErrorLine: (@Sendable (String) -> Void)?
+        onStandardErrorLine: (@Sendable (String) -> Void)?,
+        onInputBytes: (@Sendable (_ sent: Int, _ total: Int) -> Void)?
     ) async throws
 }
 
 extension ProcessRunning {
+    func run(
+        _ command: ExternalCommand,
+        onStandardErrorLine: (@Sendable (String) -> Void)?
+    ) async throws {
+        try await run(command, onStandardErrorLine: onStandardErrorLine, onInputBytes: nil)
+    }
+
     func run(_ command: ExternalCommand) async throws {
-        try await run(command, onStandardErrorLine: nil)
+        try await run(command, onStandardErrorLine: nil, onInputBytes: nil)
     }
 }
 

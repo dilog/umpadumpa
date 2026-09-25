@@ -239,7 +239,8 @@ nonisolated final class PullEngine {
                 )
             }
 
-            report(.importingDestination)
+            let dumpBytes = Self.fileByteCount(at: dumpFile)
+            report(.importingDestination, bytesSent: 0, bytesTotal: dumpBytes)
 
             if request.strategy == .createNew {
                 try await processes.run(
@@ -291,7 +292,15 @@ nonisolated final class PullEngine {
                     extra: [],
                     outputPath: nil,
                     inputPath: dumpFile
-                )
+                ),
+                onStandardErrorLine: nil,
+                onInputBytes: { [weak self] sent, total in
+                    self?.report(
+                        .importingDestination,
+                        bytesSent: sent,
+                        bytesTotal: total
+                    )
+                }
             )
         } catch {
             let entry = makeHistory(request: request, succeeded: false)
@@ -494,7 +503,9 @@ nonisolated final class PullEngine {
         _ phase: PullPhase,
         tablesReached: Int = 0,
         tablesTotal: Int = 0,
-        dumpFileMegabytes: Int? = nil
+        dumpFileMegabytes: Int? = nil,
+        bytesSent: Int = 0,
+        bytesTotal: Int = 0
     ) {
         if lastReportedPhase != phase {
             lastReportedPhase = phase
@@ -505,7 +516,9 @@ nonisolated final class PullEngine {
                 phase: phase,
                 tablesReached: tablesReached,
                 tablesTotal: tablesTotal,
-                dumpFileMegabytes: dumpFileMegabytes
+                dumpFileMegabytes: dumpFileMegabytes,
+                bytesSent: bytesSent,
+                bytesTotal: bytesTotal
             )
         )
     }
@@ -619,6 +632,14 @@ nonisolated final class PullEngine {
             return nil
         }
         return name
+    }
+
+    private static func fileByteCount(at path: String) -> Int {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attributes[.size] as? NSNumber else {
+            return 0
+        }
+        return size.intValue
     }
 
     private static func dumpFileMegabytes(at path: String) -> Int? {

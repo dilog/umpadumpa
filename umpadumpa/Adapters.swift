@@ -482,7 +482,8 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
 
     func run(
         _ command: ExternalCommand,
-        onStandardErrorLine: (@Sendable (String) -> Void)?
+        onStandardErrorLine: (@Sendable (String) -> Void)?,
+        onInputBytes: (@Sendable (_ sent: Int, _ total: Int) -> Void)?
     ) async throws {
         invocations.append(command)
 
@@ -577,6 +578,9 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
                 return
             }
             let sql = (try? String(contentsOfFile: inputPath, encoding: .utf8)) ?? ""
+            let byteCount = sql.utf8.count
+            onInputBytes?(0, byteCount)
+            onInputBytes?(byteCount, byteCount)
             if sql.contains("DROP DATABASE") {
                 didSendDropDatabase = true
                 tablesByDatabase[database] = []
@@ -783,12 +787,17 @@ nonisolated final class RealSSHTunnel: SSHTunneling {
 nonisolated final class RealProcessRunner: ProcessRunning {
     func run(
         _ command: ExternalCommand,
-        onStandardErrorLine: (@Sendable (String) -> Void)?
+        onStandardErrorLine: (@Sendable (String) -> Void)?,
+        onInputBytes: (@Sendable (_ sent: Int, _ total: Int) -> Void)?
     ) async throws {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    try self.launch(command, onStandardErrorLine: onStandardErrorLine)
+                    try self.launch(
+                        command,
+                        onStandardErrorLine: onStandardErrorLine,
+                        onInputBytes: onInputBytes
+                    )
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -799,7 +808,8 @@ nonisolated final class RealProcessRunner: ProcessRunning {
 
     private func launch(
         _ command: ExternalCommand,
-        onStandardErrorLine: (@Sendable (String) -> Void)?
+        onStandardErrorLine: (@Sendable (String) -> Void)?,
+        onInputBytes: (@Sendable (_ sent: Int, _ total: Int) -> Void)?
     ) throws {
         let process = Process()
         if command.executable.hasPrefix("/") {
@@ -821,8 +831,9 @@ nonisolated final class RealProcessRunner: ProcessRunning {
             process.standardOutput = FileHandle(forWritingAtPath: outputPath)
         }
 
-        if let inputPath = command.inputPath {
-            process.standardInput = FileHandle(forReadingAtPath: inputPath)
+        let inputPipe = Pipe()
+        if command.inputPath != nil {
+            process.standardInput = inputPipe
         }
 
         let errorPipe = Pipe()
@@ -852,6 +863,13 @@ nonisolated final class RealProcessRunner: ProcessRunning {
         }
 
         try process.run()
+        if let inputPath = command.inputPath {
+            try writeInputFile(
+                at: inputPath,
+                to: inputPipe.fileHandleForWriting,
+                onInputBytes: onInputBytes
+            )
+        }
         process.waitUntilExit()
         errorPipe.fileHandleForReading.readabilityHandler = nil
 
@@ -872,6 +890,34 @@ nonisolated final class RealProcessRunner: ProcessRunning {
                 throw PullError.dumpFailed(detail)
             }
             throw PullError.importFailed
+        }
+    }
+
+    private func writeInputFile(
+        at path: String,
+        to handle: FileHandle,
+        onInputBytes: (@Sendable (_ sent: Int, _ total: Int) -> Void)?
+    ) throws {
+        let file = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+        defer {
+            try? file.close()
+            try? handle.close()
+        }
+
+        let total = Int(try file.seekToEnd())
+        try file.seek(toOffset: 0)
+        onInputBytes?(0, total)
+
+        let chunkSize = 256 * 1024
+        var sent = 0
+        while true {
+            let chunk = try file.read(upToCount: chunkSize) ?? Data()
+            if chunk.isEmpty {
+                break
+            }
+            try handle.write(contentsOf: chunk)
+            sent += chunk.count
+            onInputBytes?(sent, total)
         }
     }
 }

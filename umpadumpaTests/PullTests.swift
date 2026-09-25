@@ -200,6 +200,30 @@ final class PullTests: XCTestCase {
         XCTAssertTrue(importProgress.allSatisfy { $0.tablesTotal == 0 && $0.tablesReached == 0 })
     }
 
+    func testImportReportsBytesSentAgainstTheDumpFileSize() async throws {
+        var progress: [PullProgress] = []
+        let lock = NSLock()
+        engine.onProgress = { update in
+            lock.lock()
+            progress.append(update)
+            lock.unlock()
+        }
+
+        _ = try await engine.run(engine.confirm(request()))
+
+        let dump = processes.invocations.first { $0.tool == .mysqldump }
+        let dumpPath = try XCTUnwrap(dump?.outputPath)
+        let dumpSize = try Data(contentsOf: URL(fileURLWithPath: dumpPath)).count
+
+        let importProgress = progress.filter { $0.phase == .importingDestination }
+        XCTAssertFalse(importProgress.isEmpty)
+        XCTAssertEqual(importProgress.first?.bytesSent, 0)
+        XCTAssertEqual(importProgress.first?.bytesTotal, dumpSize)
+        XCTAssertEqual(importProgress.last?.bytesSent, dumpSize)
+        XCTAssertEqual(importProgress.last?.bytesTotal, dumpSize)
+        XCTAssertTrue(importProgress.allSatisfy { $0.tablesReached == 0 && $0.tablesTotal == 0 })
+    }
+
     func testSubsetDumpUsesPullTablesAsMAndDoesNotShowTablesForM() async throws {
         var progress: [PullProgress] = []
         let lock = NSLock()

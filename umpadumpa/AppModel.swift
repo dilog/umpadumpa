@@ -23,7 +23,7 @@ final class AppModel {
     var pullError: String?
     var isPulling = false
     var pullPhase: PullPhase = .idle
-    var pullProgress = PullProgress(phase: .idle, tablesReached: 0, tablesTotal: 0, dumpFileMegabytes: nil)
+    var pullProgress = PullProgress(phase: .idle, tablesReached: 0, tablesTotal: 0, dumpFileMegabytes: nil, bytesSent: 0, bytesTotal: 0)
     var databaseNamesByConnectionId: [UUID: [String]] = [:]
     var databaseListErrorByConnectionId: [UUID: String] = [:]
     var loadingDatabaseConnectionId: UUID?

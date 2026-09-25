@@ -76,6 +76,8 @@ struct ContentView: View {
     @State private var pendingWorkspaceImport: Data?
     @State private var showWorkspaceImportConfirm = false
     @State private var recipeSavedClearTask: Task<Void, Never>?
+    @State private var ignoreNextRecipeChangeForOutcome = false
+    @State private var outcomeConnectionId = ""
 
     var body: some View {
         HStack(spacing: 0) {
@@ -166,6 +168,11 @@ struct ContentView: View {
             }
         }
         .onChange(of: selectedRecipeId) { _, id in
+            if ignoreNextRecipeChangeForOutcome {
+                ignoreNextRecipeChangeForOutcome = false
+            } else if model.pullPhase == .succeeded || model.pullPhase == .failed || model.pullError != nil {
+                clearPullOutcome()
+            }
             if let uuid = UUID(uuidString: id),
                let recipe = model.recipes.first(where: { $0.id == uuid }) {
                 applyRecipe(recipe)
@@ -478,6 +485,12 @@ struct ContentView: View {
     }
 
     private func selectNav(_ id: String) {
+        let openingConnection = model.connections.contains { $0.id.uuidString == id }
+        if openingConnection && outcomeConnectionId.isEmpty == false && id != outcomeConnectionId {
+            clearPullOutcome()
+        }
+        ignoreNextRecipeChangeForOutcome = true
+
         selectedNav = id
         selectedRecipeId = ""
         skipDestinationLoad = true
@@ -1221,10 +1234,17 @@ struct ContentView: View {
                         .foregroundStyle(Color(red: 0.12, green: 0.14, blue: 0.20))
                 }
             } else if model.pullPhase == .succeeded {
-                Text("Done. The Pull succeeded. See History for the log.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color(red: 0.16, green: 0.55, blue: 0.30))
-                    .textSelection(.enabled)
+                HStack(alignment: .top, spacing: 8) {
+                    Text("Done. The Pull succeeded. See History for the log.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color(red: 0.16, green: 0.55, blue: 0.30))
+                        .textSelection(.enabled)
+                    Button("Close") {
+                        clearPullOutcome()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
             }
 
             if let error = model.pullError {
@@ -1238,6 +1258,11 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    Button("Close") {
+                        clearPullOutcome()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
             }
         }
@@ -1246,7 +1271,9 @@ struct ContentView: View {
     private var pullStatusText: String {
         let progress = model.pullProgress
         if progress.phase == .importingDestination {
-            return "Importing destination…"
+            let sent = progress.bytesSent / 1_000_000
+            let total = progress.bytesTotal / 1_000_000
+            return "Importing destination… \(sent) MB of \(total) MB"
         }
 
         var text = "Dumping source…"
@@ -1413,6 +1440,20 @@ struct ContentView: View {
         )
     }
 
+    private func clearPullOutcome() {
+        outcomeConnectionId = ""
+        model.pullPhase = .idle
+        model.pullError = nil
+        model.pullProgress = PullProgress(
+            phase: .idle,
+            tablesReached: 0,
+            tablesTotal: 0,
+            dumpFileMegabytes: nil,
+            bytesSent: 0,
+            bytesTotal: 0
+        )
+    }
+
     private func runPullFromConfirm() {
         guard let request = currentPullRequest() else {
             return
@@ -1420,8 +1461,9 @@ struct ContentView: View {
         let summary = model.engine.confirm(request)
         showConfirm = false
         model.pullError = nil
+        outcomeConnectionId = selectedNav
         model.pullPhase = .dumpingSource
-        model.pullProgress = PullProgress(phase: .dumpingSource, tablesReached: 0, tablesTotal: 0, dumpFileMegabytes: nil)
+        model.pullProgress = PullProgress(phase: .dumpingSource, tablesReached: 0, tablesTotal: 0, dumpFileMegabytes: nil, bytesSent: 0, bytesTotal: 0)
         model.isPulling = true
         Task {
             defer { model.isPulling = false }
@@ -1430,12 +1472,6 @@ struct ContentView: View {
                 model.pullError = nil
                 model.pullPhase = .succeeded
                 model.refreshHistory()
-                Task {
-                    try? await Task.sleep(for: .seconds(3))
-                    if model.pullPhase == .succeeded {
-                        model.pullPhase = .idle
-                    }
-                }
             } catch PullError.alreadyRunning {
                 model.pullPhase = .failed
                 model.pullError = "A Pull is already running."
