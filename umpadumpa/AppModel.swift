@@ -26,7 +26,7 @@ final class AppModel {
     var pullProgress = PullProgress(phase: .idle, tablesReached: 0, tablesTotal: 0, dumpFileMegabytes: nil, bytesSent: 0, bytesTotal: 0)
     var databaseNamesByConnectionId: [UUID: [String]] = [:]
     var databaseListErrorByConnectionId: [UUID: String] = [:]
-    var loadingDatabaseConnectionId: UUID?
+    var loadingDatabasePicker: String?
     var liveTableNames: [String] = []
     var tableListError: String?
     var isLoadingTables = false
@@ -354,27 +354,28 @@ final class AppModel {
         return engine.confirm(request)
     }
 
-    func loadDatabases(for connection: Connection, force: Bool) {
-        enqueueListings(DatabaseListingSequence.ordered(source: connection, destination: nil), force: force)
+    func loadDatabases(for connection: Connection, picker: String, force: Bool) {
+        enqueueListings([(connection, picker)], force: force)
     }
 
     func loadSourceThenDestination(source: Connection, destination: Connection?, force: Bool) {
-        enqueueListings(
-            DatabaseListingSequence.ordered(source: source, destination: destination),
-            force: force
-        )
+        let connections = DatabaseListingSequence.ordered(source: source, destination: destination)
+        let items = connections.enumerated().map { index, connection in
+            (connection, index == 0 ? "source" : "destination")
+        }
+        enqueueListings(items, force: force)
     }
 
-    private func enqueueListings(_ connections: [Connection], force: Bool) {
+    private func enqueueListings(_ items: [(Connection, String)], force: Bool) {
         listingChain = Task { [listingChain] in
             await listingChain.value
-            for connection in connections {
-                await listDatabasesNow(for: connection, force: force)
+            for (connection, picker) in items {
+                await listDatabasesNow(for: connection, picker: picker, force: force)
             }
         }
     }
 
-    private func listDatabasesNow(for connection: Connection, force: Bool) async {
+    private func listDatabasesNow(for connection: Connection, picker: String, force: Bool) async {
         if isPulling || engine.isRunning {
             return
         }
@@ -385,7 +386,7 @@ final class AppModel {
         }
 
         await MainActor.run {
-            loadingDatabaseConnectionId = connection.id
+            loadingDatabasePicker = picker
             databaseListErrorByConnectionId[connection.id] = nil
         }
 
@@ -394,14 +395,14 @@ final class AppModel {
             await MainActor.run {
                 databaseNamesByConnectionId[connection.id] = names
                 databaseListErrorByConnectionId[connection.id] = nil
-                if loadingDatabaseConnectionId == connection.id {
-                    loadingDatabaseConnectionId = nil
+                if loadingDatabasePicker == picker {
+                    loadingDatabasePicker = nil
                 }
             }
         } catch {
             await MainActor.run {
-                if loadingDatabaseConnectionId == connection.id {
-                    loadingDatabaseConnectionId = nil
+                if loadingDatabasePicker == picker {
+                    loadingDatabasePicker = nil
                 }
                 databaseListErrorByConnectionId[connection.id] = listingErrorMessage(error)
             }

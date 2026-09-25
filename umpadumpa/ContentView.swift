@@ -204,7 +204,7 @@ struct ContentView: View {
                 return
             }
             if let dest = model.connections.first(where: { $0.id.uuidString == id }) {
-                model.loadDatabases(for: dest, force: false)
+                model.loadDatabases(for: dest, picker: "destination", force: false)
             }
         }
         .onChange(of: destinationDatabase) { _, name in
@@ -333,23 +333,19 @@ struct ContentView: View {
             List {
                 ForEach(model.connections) { connection in
                     connectionSidebarRow(connection)
-                        .listRowInsets(EdgeInsets())
+                        .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
-                        .onDrag {
-                            NSItemProvider(object: connection.id.uuidString as NSString)
-                        }
-                        .onDrop(of: [.text], delegate: ConnectionReorderDrop(
-                            targetId: connection.id,
-                            connections: model.connections,
-                            move: { fromOffsets, toOffset in
-                                model.moveConnections(fromOffsets: fromOffsets, toOffset: toOffset)
-                            }
-                        ))
+                }
+                .onMove { fromOffsets, toOffset in
+                    model.moveConnections(fromOffsets: fromOffsets, toOffset: toOffset)
                 }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .scrollClipDisabled()
+            .contentMargins(.vertical, 10, for: .scrollContent)
+            .padding(.horizontal, 12)
             .environment(\.defaultMinListRowHeight, 1)
             .frame(maxHeight: .infinity)
 
@@ -407,7 +403,12 @@ struct ContentView: View {
         let isSelected = selectedNav == id
         let icon = connection.name.lowercased() == "localhost" ? "laptopcomputer" : "externaldrive.fill"
 
-        return sidebarRowContent(title: connection.name, icon: icon, isSelected: isSelected)
+        return sidebarRowContent(
+            title: connection.name,
+            icon: icon,
+            isSelected: isSelected,
+            horizontalPadding: 0
+        )
         .contentShape(Rectangle())
         .onTapGesture {
             selectNav(id)
@@ -466,7 +467,8 @@ struct ContentView: View {
         title: String,
         icon: String,
         isSelected: Bool,
-        color: Color? = nil
+        color: Color? = nil,
+        horizontalPadding: CGFloat = 12
     ) -> some View {
         let textColor = color
             ?? (isSelected
@@ -482,45 +484,8 @@ struct ContentView: View {
         .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
         .foregroundStyle(textColor)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, horizontalPadding)
         .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isSelected ? Color(red: 0.86, green: 0.92, blue: 1.0) : Color.clear)
-        )
-    }
-
-    /// Drop a dragged Connection onto another Connection row. History, Settings, and New Connection are outside this list.
-    private struct ConnectionReorderDrop: DropDelegate {
-        let targetId: UUID
-        let connections: [Connection]
-        let move: (IndexSet, Int) -> Void
-
-        func performDrop(info: DropInfo) -> Bool {
-            guard let provider = info.itemProviders(for: [.text]).first else {
-                return false
-            }
-
-            provider.loadObject(ofClass: NSString.self) { reading, _ in
-                let draggedText = reading as? String ?? ""
-                guard let draggedId = UUID(uuidString: draggedText) else {
-                    return
-                }
-
-                DispatchQueue.main.async {
-                    guard let from = connections.firstIndex(where: { $0.id == draggedId }),
-                          let to = connections.firstIndex(where: { $0.id == targetId }),
-                          from != to else {
-                        return
-                    }
-
-                    let destination = from < to ? to + 1 : to
-                    move(IndexSet(integer: from), destination)
-                }
-            }
-
-            return true
-        }
     }
 
     private func selectNav(_ id: String) {
@@ -1076,24 +1041,30 @@ struct ContentView: View {
         }
     }
 
-    private func liveDatabasePicker(connection: Connection, selection: Binding<String>) -> some View {
+    private func liveDatabasePicker(connection: Connection, picker: String, selection: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
                 nativePicker(
                     selection: selection,
                     options: databasePickerOptions(for: connection, selected: selection.wrappedValue)
                 )
-                if model.loadingDatabaseConnectionId == connection.id {
+                if model.loadingDatabasePicker == picker {
                     ProgressView()
                         .controlSize(.small)
+                } else {
+                    Button {
+                        model.loadDatabases(for: connection, picker: picker, force: true)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.clockwise")
+                            Text(model.databaseListErrorByConnectionId[connection.id] == nil ? "Refresh" : "Retry")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
+                    .disabled(model.isPulling)
                 }
-                Button(model.databaseListErrorByConnectionId[connection.id] == nil ? "Refresh" : "Retry") {
-                    model.loadDatabases(for: connection, force: true)
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 12))
-                .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
-                .disabled(model.isPulling)
             }
 
             if let listError = model.databaseListErrorByConnectionId[connection.id] {
@@ -1121,7 +1092,7 @@ struct ContentView: View {
             lockedField(text: connection.name, icon: "lock.fill")
 
             fieldLabel("Database")
-            liveDatabasePicker(connection: connection, selection: $sourceDatabase)
+            liveDatabasePicker(connection: connection, picker: "source", selection: $sourceDatabase)
 
             Toggle("System databases", isOn: $showSystemDatabases)
                 .font(.system(size: 12))
@@ -1149,14 +1120,20 @@ struct ContentView: View {
                     if model.isLoadingTables {
                         ProgressView()
                             .controlSize(.small)
+                    } else {
+                        Button {
+                            loadTablesForSource()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.clockwise")
+                                Text(model.tableListError == nil ? "Refresh" : "Retry")
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
+                        .disabled(model.isPulling)
                     }
-                    Button(model.tableListError == nil ? "Refresh" : "Retry") {
-                        loadTablesForSource()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color(red: 0.15, green: 0.42, blue: 0.95))
-                    .disabled(model.isPulling)
                 }
                 .font(.system(size: 12))
                 .buttonStyle(.plain)
@@ -1213,7 +1190,7 @@ struct ContentView: View {
 
             if strategy != "create", let dest = realDestinationConnection {
                 fieldLabel("Database")
-                liveDatabasePicker(connection: dest, selection: $destinationDatabase)
+                liveDatabasePicker(connection: dest, picker: "destination", selection: $destinationDatabase)
             }
 
             fieldLabel("Strategy")

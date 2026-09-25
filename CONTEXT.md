@@ -13,7 +13,7 @@ A saved MySQL server you can reach. Remote and local servers are the same kind o
 _Avoid_: Bookmark, server bookmark, project, host, DB server
 
 **Recipe**:
-An optional saved set of defaults for a Pull: source Connection and database, destination Connection and database, a Strategy, a Replace mode, and optionally a list of tables. An empty table list means the entire Database. After picking a Connection, only Recipes whose source is that Connection are offered. Changing fields for one Pull does not update the Recipe unless the user saves. Selecting a Connection preselects the last Recipe that ran a Pull from that Connection, including a failed Pull; if none has, the Recipe picker stays empty. A one-off Pull does not change that memory. If that Recipe is deleted, the picker is empty again.
+An optional saved set of defaults for a Pull: source Connection and database, destination Connection and database, a Strategy, a Replace mode, and optionally a list of tables. An empty table list means the entire Database. After picking a Connection, only Recipes whose source is that Connection are offered. Changing fields for one Pull does not update the Recipe unless the user saves. Selecting a Connection leaves the Recipe picker on None with empty form defaults; the app does not remember or preselect the last Recipe used from that Connection.
 _Avoid_: Bookmark, project, preset, connection (a Connection is only the server)
 
 **Database**:
@@ -44,16 +44,22 @@ _Avoid_: Sync, import, dump
 A local log of Pulls that already happened: when, source, destination, succeeded or failed. You cannot re-run a Pull from History. The log keeps the most recent 100 rows. The user can empty the whole log after confirm; they cannot delete one row.
 _Avoid_: Recipe, Storico as a second concept
 
+**Workspace file**:
+A file on disk holding Connections, Recipes, and the Settings paths for `mysqldump` and `mysql`. It has no passwords and no History. It is not a Backup.
+_Avoid_: Backup, settings backup, snapshot
+
 ## Facts (do not invent otherwise)
 
-- The window, Dock, and sidebar say **UmpaDumpa**. The Xcode target, repo folder, Application Support directory (`~/Library/Application Support/umpadumpa`), and Keychain service stay `umpadumpa`.
+- The Dock and the sidebar say **UmpaDumpa**. The window title bar does not repeat the name. The Xcode target, repo folder, Application Support directory (`~/Library/Application Support/umpadumpa`), and Keychain service stay `umpadumpa`.
 - Bundle id: `it.alfacommunication.UmpaDumpa`. Debug/release on this Mac: Apple Development, team Alfa Communication (`3N673T64VD`). Keychain Always Allow sticks across rebuilds with that team and bundle id.
 - Minimum macOS is **26 (Tahoe)**. The Xcode default was 27; that made a Tahoe Mac refuse to launch. Sequoia (15) and older are out of V1 unless we decide otherwise. A zip already built with 27 must be rebuilt to run on Tahoe.
-- Clients: Settings `mysqldump` / `mysql` paths, not bundled binaries. Homebrew MySQL 9 cannot talk to servers that still use `mysql_native_password`; this machine’s Settings point at `mysql-client@8.0` (`/opt/homebrew/opt/mysql-client@8.0/bin/...`). That is one Settings pair for the whole app, not per Connection.
+- Clients: Settings `mysqldump` / `mysql` paths, not bundled binaries. Homebrew MySQL 9 cannot talk to servers that still use `mysql_native_password`; this machine’s Settings point at `mysql-client@8.0` (`/opt/homebrew/opt/mysql-client@8.0/bin/...`). That is one Settings pair for the whole app, not per Connection. When both paths are empty and the user has not finished the first-open sheet, the app explains that empty means PATH and why `mysql-client@8.0` is often required. Continue saves the paths and dismisses that sheet for good, even if both stay empty. Not now discards what was typed and shows the sheet again on the next launch while both paths are still empty.
 - Visible UI copy is English for now (including progress strings such as “7 of 10 tables”).
+- macOS UI follows Apple’s Human Interface Guidelines and the native SwiftUI or AppKit control for each job. Prefer the system look, motion, and interaction. Do not invent a custom control, gesture, or decoration when the platform already has the recommended one.
 - Source and destination Database pickers load live `SHOW DATABASES` (session cache, Refresh). Selected tables loads live `SHOW TABLES` (tables and views, no session cache). Recipe names missing on the server stay selectable and marked absent. For dump progress on an entire Database, the Pull still runs its own `SHOW TABLES`; a subset Pull uses the Pull’s table list. There is no live MySQL ping. The selected Connection’s header shows host, port, and whether SSH is on; no status dot.
 - Connections can be deleted from the sidebar after confirm. Sidebar order is the user’s and is saved; a new Connection is appended.
-- Pull progress sits by the footer buttons. While dumping (and while dumping a Backup): spinner, “N of M tables” (tables completed, not bytes or ETA), and dump file size in MB when cheap. Import is spinner plus phase only. Success and “Recipe saved.” are brief and not a green banner. Failures stay visible and copyable.
+- Pull progress sits by the footer buttons. While dumping (and while dumping a Backup): spinner, “N of M tables” (tables completed, not bytes or ETA), and dump file size in MB when cheap. Import is spinner plus “N MB of M MB” sent to `mysql`, not a table count. The outcome stays on that Connection’s Pull screen until the user closes it, changes Recipe, selects another Connection, or starts another Pull. History and Settings do not clear it. “Recipe saved.” stays brief. Failures stay copyable.
+- A Workspace file is exported and imported from Settings. Import replaces Connections, Recipes, and the client paths after confirm. Connection ids are kept, so Keychain secrets on this Mac still match; passphrases and passwords are never in the file. A Connection missing from the file is deleted with its Keychain secrets and with Recipes whose source is that Connection. History is not changed. An unreadable file changes nothing. Import is unavailable while a Pull is running. Export stays available during a Pull. A failed Import stays on Settings until the user closes it or starts another Import. A successful Import shows a brief “Workspace imported.”
 - Source dump (and destination dump for Backup) always asks the MySQL client for protocol compression (`zstd`/`zlib`, falling back if the server cannot). This is not a Gzip file option and not remote `mysqldump | gzip`.
 - Duplicate and Delete on a selected Recipe sit to the trailing side of the Recipe picker.
 - First-open window is taller than the old 720 pt default (about 840) so the footer is not flush with the bottom; the window can still shrink to 720.
