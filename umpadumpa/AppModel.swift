@@ -48,6 +48,7 @@ final class AppModel {
     var mysqldumpPath = ""
     var mysqlPath = ""
     var firstOpenClientSheet = FirstOpenClientSheetSession(saved: .usingPath)
+    var workspaceImportError: String?
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -96,6 +97,39 @@ final class AppModel {
             selectedNav = first.id.uuidString
             sourceDatabase = ""
             destinationConnectionId = connections.first { $0.name.lowercased() == "localhost" }?.id ?? first.id
+        }
+    }
+
+    func exportWorkspaceData() throws -> Data {
+        try disk.exportWorkspaceFile()
+    }
+
+    func importWorkspace(data: Data) throws {
+        workspaceImportError = nil
+        do {
+            try disk.importWorkspaceFile(
+                data,
+                secrets: secrets,
+                pullIsRunning: isPulling || engine.isRunning
+            )
+        } catch WorkspaceImportError.pullRunning {
+            workspaceImportError = "Import is unavailable while a Pull is running."
+            throw WorkspaceImportError.pullRunning
+        } catch {
+            workspaceImportError = "Could not read that Workspace file."
+            throw WorkspaceImportError.unreadable
+        }
+
+        connections = disk.loadConnections()
+        recipes = disk.loadRecipes()
+        let loaded = settingsStore.load()
+        mysqldumpPath = loaded.mysqldumpPath
+        mysqlPath = loaded.mysqlPath
+        firstOpenClientSheet.saved = loaded
+        if selectedNav != "history" && selectedNav != "settings" {
+            if connections.contains(where: { $0.id.uuidString == selectedNav }) == false {
+                selectedNav = connections.first?.id.uuidString ?? "settings"
+            }
         }
     }
 

@@ -240,6 +240,18 @@ enum ClientTool: Equatable {
     case mysql
 }
 
+nonisolated struct WorkspaceFile: Equatable, Codable {
+    var connections: [Connection]
+    var recipes: [Recipe]
+    var mysqldumpPath: String
+    var mysqlPath: String
+}
+
+nonisolated enum WorkspaceImportError: Error, Equatable {
+    case unreadable
+    case pullRunning
+}
+
 struct ClientSettings: Equatable, Codable {
     var mysqldumpPath: String
     var mysqlPath: String

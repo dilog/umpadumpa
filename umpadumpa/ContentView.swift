@@ -1,6 +1,7 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
+import UniformTypeIdentifiers
 #endif
 
 // MOCKUP ONLY. Fake data, no MySQL.
@@ -70,6 +71,10 @@ struct ContentView: View {
     @State private var showClearHistoryConfirm = false
     @State private var historySortOrder = HistoryDisplay.defaultSortOrder
     @State private var recipeSavedMessage: String?
+    @State private var workspaceNotice: String?
+    @State private var workspaceNoticeClearTask: Task<Void, Never>?
+    @State private var pendingWorkspaceImport: Data?
+    @State private var showWorkspaceImportConfirm = false
     @State private var recipeSavedClearTask: Task<Void, Never>?
 
     var body: some View {
@@ -664,9 +669,116 @@ struct ContentView: View {
                 }
             }
 
+            mockCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    cardTitle("Workspace file", icon: "doc")
+                    Text("Connections, Recipes, and the client paths. No passwords and no History.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(red: 0.45, green: 0.49, blue: 0.55))
+                    HStack(spacing: 8) {
+                        Button("Export…", action: exportWorkspace)
+                            .buttonStyle(.bordered)
+                            .controlSize(.extraLarge)
+                        Button("Import…", action: chooseWorkspaceFile)
+                            .buttonStyle(.bordered)
+                            .controlSize(.extraLarge)
+                            .disabled(model.isPulling)
+                    }
+                    if let error = model.workspaceImportError {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(error)
+                                .font(.system(size: 13))
+                                .foregroundStyle(.red)
+                                .textSelection(.enabled)
+                            Button("Close") {
+                                model.workspaceImportError = nil
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    if let workspaceNotice {
+                        Text(workspaceNotice)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color(red: 0.45, green: 0.49, blue: 0.55))
+                    }
+                }
+            }
+            .alert("Import Workspace?", isPresented: $showWorkspaceImportConfirm) {
+                Button("Import", role: nil, action: confirmWorkspaceImport)
+                Button("Cancel", role: .cancel) {
+                    pendingWorkspaceImport = nil
+                }
+            } message: {
+                Text("This replaces Connections, Recipes, and the client paths. Passwords already saved for the same Connection stay on this Mac. History is not changed.")
+            }
+
             Spacer()
         }
         .padding(36)
+    }
+
+    private func exportWorkspace() {
+        #if os(macOS)
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "workspace.json"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+        do {
+            let data = try model.exportWorkspaceData()
+            try data.write(to: url)
+        } catch {
+            model.workspaceImportError = "Could not export the Workspace file."
+        }
+        #endif
+    }
+
+    private func chooseWorkspaceFile() {
+        model.workspaceImportError = nil
+        workspaceNotice = nil
+        #if os(macOS)
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+        guard let data = try? Data(contentsOf: url) else {
+            model.workspaceImportError = "Could not read that Workspace file."
+            return
+        }
+        pendingWorkspaceImport = data
+        showWorkspaceImportConfirm = true
+        #endif
+    }
+
+    private func confirmWorkspaceImport() {
+        guard let data = pendingWorkspaceImport else {
+            return
+        }
+        pendingWorkspaceImport = nil
+        do {
+            try model.importWorkspace(data: data)
+            showWorkspaceImported()
+        } catch {
+            workspaceNotice = nil
+        }
+    }
+
+    private func showWorkspaceImported() {
+        workspaceNotice = "Workspace imported."
+        workspaceNoticeClearTask?.cancel()
+        workspaceNoticeClearTask = Task {
+            try? await Task.sleep(for: .seconds(3))
+            if Task.isCancelled {
+                return
+            }
+            workspaceNotice = nil
+        }
     }
 
     private func pullScreen(for connection: Connection) -> some View {

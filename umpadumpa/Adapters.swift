@@ -248,6 +248,46 @@ nonisolated final class DiskStore {
         all.removeAll { $0.id == id }
         saveRecipes(all)
     }
+
+    func exportWorkspaceFile() throws -> Data {
+        let settings = loadSettings()
+        let file = WorkspaceFile(
+            connections: loadConnections(),
+            recipes: loadRecipes(),
+            mysqldumpPath: settings.mysqldumpPath,
+            mysqlPath: settings.mysqlPath
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(file)
+    }
+
+    func importWorkspaceFile(_ data: Data, secrets: SecretStoring, pullIsRunning: Bool) throws {
+        if pullIsRunning {
+            throw WorkspaceImportError.pullRunning
+        }
+
+        let decoded: WorkspaceFile
+        do {
+            decoded = try JSONDecoder().decode(WorkspaceFile.self, from: data)
+        } catch {
+            throw WorkspaceImportError.unreadable
+        }
+
+        let importedIds = Set(decoded.connections.map(\.id))
+        for connection in loadConnections() where importedIds.contains(connection.id) == false {
+            secrets.deleteSecrets(forConnectionId: connection.id)
+        }
+
+        let recipes = decoded.recipes.filter { importedIds.contains($0.sourceConnectionId) }
+        saveConnections(decoded.connections)
+        saveRecipes(recipes)
+
+        var settings = loadSettings()
+        settings.mysqldumpPath = decoded.mysqldumpPath
+        settings.mysqlPath = decoded.mysqlPath
+        saveSettings(settings)
+    }
 }
 
 nonisolated final class DiskHistoryStore: HistoryStoring {
