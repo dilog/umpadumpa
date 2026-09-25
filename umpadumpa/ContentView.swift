@@ -489,7 +489,9 @@ struct ContentView: View {
         if openingConnection && outcomeConnectionId.isEmpty == false && id != outcomeConnectionId {
             clearPullOutcome()
         }
-        ignoreNextRecipeChangeForOutcome = true
+        if selectedRecipeId.isEmpty == false {
+            ignoreNextRecipeChangeForOutcome = true
+        }
 
         selectedNav = id
         selectedRecipeId = ""
