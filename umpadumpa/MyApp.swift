@@ -11,6 +11,7 @@ import AppKit
         WindowGroup("UmpaDumpa") {
             ContentView(model: model)
                 .preferredColorScheme(.light)
+                .background(HiddenWindowTitle())
                 .onAppear {
                     NSApp.appearance = NSAppearance(named: .aqua)
                 }
@@ -33,6 +34,19 @@ import AppKit
     }
 
     #if os(macOS)
+    /// Keeps the traffic lights and hides the title text so the bar does not repeat UmpaDumpa.
+    private struct HiddenWindowTitle: NSViewRepresentable {
+        func makeNSView(context: Context) -> NSView {
+            NSView(frame: .zero)
+        }
+
+        func updateNSView(_ nsView: NSView, context: Context) {
+            DispatchQueue.main.async {
+                nsView.window?.titleVisibility = .hidden
+            }
+        }
+    }
+
     private func aboutPanelOptions() -> [NSApplication.AboutPanelOptionKey: Any] {
         let info = Bundle.main.infoDictionary ?? [:]
         var options: [NSApplication.AboutPanelOptionKey: Any] = [:]

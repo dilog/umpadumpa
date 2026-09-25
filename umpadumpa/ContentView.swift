@@ -336,9 +336,16 @@ struct ContentView: View {
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
-                }
-                .onMove { fromOffsets, toOffset in
-                    model.moveConnections(fromOffsets: fromOffsets, toOffset: toOffset)
+                        .onDrag {
+                            NSItemProvider(object: connection.id.uuidString as NSString)
+                        }
+                        .onDrop(of: [.text], delegate: ConnectionReorderDrop(
+                            targetId: connection.id,
+                            connections: model.connections,
+                            move: { fromOffsets, toOffset in
+                                model.moveConnections(fromOffsets: fromOffsets, toOffset: toOffset)
+                            }
+                        ))
                 }
             }
             .listStyle(.plain)
@@ -400,12 +407,11 @@ struct ContentView: View {
         let isSelected = selectedNav == id
         let icon = connection.name.lowercased() == "localhost" ? "laptopcomputer" : "externaldrive.fill"
 
-        return Button {
+        return sidebarRowContent(title: connection.name, icon: icon, isSelected: isSelected)
+        .contentShape(Rectangle())
+        .onTapGesture {
             selectNav(id)
-        } label: {
-            sidebarRowContent(title: connection.name, icon: icon, isSelected: isSelected)
         }
-        .buttonStyle(.plain)
         .contextMenu {
             Button("Edit…") {
                 model.beginEditConnection(connection)
@@ -482,6 +488,39 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isSelected ? Color(red: 0.86, green: 0.92, blue: 1.0) : Color.clear)
         )
+    }
+
+    /// Drop a dragged Connection onto another Connection row. History, Settings, and New Connection are outside this list.
+    private struct ConnectionReorderDrop: DropDelegate {
+        let targetId: UUID
+        let connections: [Connection]
+        let move: (IndexSet, Int) -> Void
+
+        func performDrop(info: DropInfo) -> Bool {
+            guard let provider = info.itemProviders(for: [.text]).first else {
+                return false
+            }
+
+            provider.loadObject(ofClass: NSString.self) { reading, _ in
+                let draggedText = reading as? String ?? ""
+                guard let draggedId = UUID(uuidString: draggedText) else {
+                    return
+                }
+
+                DispatchQueue.main.async {
+                    guard let from = connections.firstIndex(where: { $0.id == draggedId }),
+                          let to = connections.firstIndex(where: { $0.id == targetId }),
+                          from != to else {
+                        return
+                    }
+
+                    let destination = from < to ? to + 1 : to
+                    move(IndexSet(integer: from), destination)
+                }
+            }
+
+            return true
+        }
     }
 
     private func selectNav(_ id: String) {
@@ -729,7 +768,7 @@ struct ContentView: View {
 
             Spacer()
         }
-        .padding(36)
+        .padding(28)
     }
 
     private func exportWorkspace() {
@@ -1773,6 +1812,8 @@ struct ContentView: View {
                     .font(.system(size: 13))
                 Spacer()
             }
+            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
     }
@@ -1807,6 +1848,8 @@ struct ContentView: View {
                     .font(.system(size: 13))
                 Spacer()
             }
+            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
     }
