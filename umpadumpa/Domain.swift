@@ -243,8 +243,56 @@ enum ClientTool: Equatable {
 struct ClientSettings: Equatable, Codable {
     var mysqldumpPath: String
     var mysqlPath: String
+    var firstOpenSheetFinished: Bool
 
-    static let usingPath = ClientSettings(mysqldumpPath: "", mysqlPath: "")
+    static let usingPath = ClientSettings(mysqldumpPath: "", mysqlPath: "", firstOpenSheetFinished: false)
+
+    init(mysqldumpPath: String, mysqlPath: String, firstOpenSheetFinished: Bool = false) {
+        self.mysqldumpPath = mysqldumpPath
+        self.mysqlPath = mysqlPath
+        self.firstOpenSheetFinished = firstOpenSheetFinished
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mysqldumpPath = try container.decodeIfPresent(String.self, forKey: .mysqldumpPath) ?? ""
+        mysqlPath = try container.decodeIfPresent(String.self, forKey: .mysqlPath) ?? ""
+        firstOpenSheetFinished = try container.decodeIfPresent(Bool.self, forKey: .firstOpenSheetFinished) ?? false
+    }
+}
+
+struct FirstOpenClientSheetSession: Equatable {
+    var saved: ClientSettings
+    var deferredThisLaunch: Bool
+
+    init(saved: ClientSettings, deferredThisLaunch: Bool = false) {
+        self.saved = saved
+        self.deferredThisLaunch = deferredThisLaunch
+    }
+
+    var isPresented: Bool {
+        if deferredThisLaunch {
+            return false
+        }
+        if saved.firstOpenSheetFinished {
+            return false
+        }
+        let dump = saved.mysqldumpPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let mysql = saved.mysqlPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return dump.isEmpty && mysql.isEmpty
+    }
+
+    mutating func continueWith(mysqldumpPath: String, mysqlPath: String) {
+        saved = ClientSettings(
+            mysqldumpPath: mysqldumpPath,
+            mysqlPath: mysqlPath,
+            firstOpenSheetFinished: true
+        )
+    }
+
+    mutating func notNow() {
+        deferredThisLaunch = true
+    }
 }
 
 struct ExternalCommand: Equatable {

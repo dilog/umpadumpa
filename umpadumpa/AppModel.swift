@@ -47,6 +47,7 @@ final class AppModel {
     var newSSHPassphrase = ""
     var mysqldumpPath = ""
     var mysqlPath = ""
+    var firstOpenClientSheet = FirstOpenClientSheetSession(saved: .usingPath)
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -90,6 +91,7 @@ final class AppModel {
         let loadedSettings = settingsStore.load()
         self.mysqldumpPath = loadedSettings.mysqldumpPath
         self.mysqlPath = loadedSettings.mysqlPath
+        self.firstOpenClientSheet = FirstOpenClientSheetSession(saved: loadedSettings)
         if let first = connections.first {
             selectedNav = first.id.uuidString
             sourceDatabase = ""
@@ -98,12 +100,22 @@ final class AppModel {
     }
 
     func saveClientSettings() {
-        settingsStore.save(
-            ClientSettings(
-                mysqldumpPath: mysqldumpPath,
-                mysqlPath: mysqlPath
-            )
-        )
+        var next = firstOpenClientSheet.saved
+        next.mysqldumpPath = mysqldumpPath
+        next.mysqlPath = mysqlPath
+        firstOpenClientSheet.saved = next
+        settingsStore.save(next)
+    }
+
+    func continueFirstOpenClientSheet(mysqldumpPath: String, mysqlPath: String) {
+        firstOpenClientSheet.continueWith(mysqldumpPath: mysqldumpPath, mysqlPath: mysqlPath)
+        self.mysqldumpPath = firstOpenClientSheet.saved.mysqldumpPath
+        self.mysqlPath = firstOpenClientSheet.saved.mysqlPath
+        settingsStore.save(firstOpenClientSheet.saved)
+    }
+
+    func dismissFirstOpenClientSheet() {
+        firstOpenClientSheet.notNow()
     }
 
     func refreshHistory() {

@@ -1033,6 +1033,46 @@ final class SettingsStoreTests: XCTestCase {
     }
 }
 
+final class FirstOpenClientSheetTests: XCTestCase {
+    func testContinueSavesEmptyPathsAndSheetDoesNotReturn() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = DiskSettingsStore(disk: DiskStore(folder: folder))
+        var session = FirstOpenClientSheetSession(saved: store.load())
+
+        XCTAssertTrue(session.isPresented)
+
+        session.continueWith(mysqldumpPath: "", mysqlPath: "")
+        store.save(session.saved)
+
+        let nextLaunch = FirstOpenClientSheetSession(saved: DiskSettingsStore(disk: DiskStore(folder: folder)).load())
+        XCTAssertFalse(nextLaunch.isPresented)
+        XCTAssertEqual(nextLaunch.saved.mysqldumpPath, "")
+        XCTAssertEqual(nextLaunch.saved.mysqlPath, "")
+    }
+
+    func testNotNowDiscardsDraftAndSheetReturnsNextLaunch() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = DiskSettingsStore(disk: DiskStore(folder: folder))
+        var session = FirstOpenClientSheetSession(saved: store.load())
+
+        XCTAssertTrue(session.isPresented)
+        session.notNow()
+        XCTAssertFalse(session.isPresented)
+
+        let nextLaunch = FirstOpenClientSheetSession(saved: store.load())
+        XCTAssertTrue(nextLaunch.isPresented)
+        XCTAssertEqual(nextLaunch.saved, .usingPath)
+    }
+
+    func testSavedPathOnEitherClientSkipsSheet() {
+        let dumpOnly = ClientSettings(mysqldumpPath: "/opt/homebrew/bin/mysqldump", mysqlPath: "")
+        XCTAssertFalse(FirstOpenClientSheetSession(saved: dumpOnly).isPresented)
+
+        let mysqlOnly = ClientSettings(mysqldumpPath: "", mysqlPath: "/opt/homebrew/bin/mysql")
+        XCTAssertFalse(FirstOpenClientSheetSession(saved: mysqlOnly).isPresented)
+    }
+}
+
 final class ConnectionStoreTests: XCTestCase {
     func testDuplicatedConnectionGetsNewIdCopySuffixAndSameReachabilityFields() {
         let original = Connection(

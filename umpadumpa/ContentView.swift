@@ -102,6 +102,24 @@ struct ContentView: View {
             saveRecipeNameSheet
                 .preferredColorScheme(.light)
         }
+        .sheet(isPresented: Binding(
+            get: { model.firstOpenClientSheet.isPresented },
+            set: { showing in
+                if !showing {
+                    model.dismissFirstOpenClientSheet()
+                }
+            }
+        )) {
+            FirstOpenClientPathSheet(
+                onContinue: { dumpPath, mysqlPath in
+                    model.continueFirstOpenClientSheet(mysqldumpPath: dumpPath, mysqlPath: mysqlPath)
+                },
+                onNotNow: {
+                    model.dismissFirstOpenClientSheet()
+                }
+            )
+            .preferredColorScheme(.light)
+        }
         .confirmationDialog(
             "Overwrite Recipe?",
             isPresented: $showOverwriteRecipeConfirm,
@@ -546,6 +564,76 @@ struct ContentView: View {
             .tableStyle(.inset)
         }
         .padding(28)
+    }
+
+    private struct FirstOpenClientPathSheet: View {
+        var onContinue: (String, String) -> Void
+        var onNotNow: () -> Void
+
+        @State private var mysqldumpPath = ""
+        @State private var mysqlPath = ""
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("MySQL client")
+                    .font(.system(size: 22, weight: .bold))
+
+                Text("Leave a path empty to use mysqldump and mysql from PATH. Homebrew MySQL 9 cannot talk to servers that still use mysql_native_password, so mysql-client@8.0 is often required.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(red: 0.28, green: 0.31, blue: 0.36))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                pathRow(title: "mysqldump", text: $mysqldumpPath)
+                pathRow(title: "mysql", text: $mysqlPath)
+
+                HStack {
+                    Spacer()
+                    Button("Not now") {
+                        onNotNow()
+                    }
+                    .keyboardShortcut(.cancelAction)
+
+                    Button("Continue") {
+                        onContinue(mysqldumpPath, mysqlPath)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(24)
+            .frame(width: 520)
+        }
+
+        private func pathRow(title: String, text: Binding<String>) -> some View {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                HStack {
+                    TextField("/opt/homebrew/opt/mysql-client@8.0/bin/\(title)", text: text)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Choose…") {
+                        if let path = chooseExecutable() {
+                            text.wrappedValue = path
+                        }
+                    }
+                }
+            }
+        }
+
+        private func chooseExecutable() -> String? {
+            #if os(macOS)
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = true
+            panel.canChooseDirectories = false
+            panel.allowsMultipleSelection = false
+            panel.treatsFilePackagesAsDirectories = false
+            guard panel.runModal() == .OK else {
+                return nil
+            }
+            return panel.url?.path
+            #else
+            return nil
+            #endif
+        }
     }
 
     private var settingsScreen: some View {
