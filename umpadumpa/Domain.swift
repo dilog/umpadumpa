@@ -212,7 +212,7 @@ enum AppVersion {
 enum PullError: Error, Equatable {
     case alreadyRunning
     case dumpFailed(String)
-    case importFailed
+    case importFailed(String)
     case tunnelFailed
     case missingClient(ClientTool)
     case nameAlreadyExists

@@ -200,7 +200,7 @@ nonisolated final class PullEngine {
                     database: request.destinationDatabase,
                     namedTables: [],
                     historyRequest: request,
-                    failAs: .importFailed
+                    failAs: .importFailed("")
                 )
                 report(.creatingBackup, tablesReached: 0, tablesTotal: backupTables.count)
                 try await runDump(
@@ -302,11 +302,16 @@ nonisolated final class PullEngine {
                     )
                 }
             )
+        } catch let PullError.importFailed(detail) {
+            let entry = makeHistory(request: request, succeeded: false)
+            rememberPull(entry)
+            report(.failed)
+            throw PullError.importFailed(detail)
         } catch {
             let entry = makeHistory(request: request, succeeded: false)
             rememberPull(entry)
             report(.failed)
-            throw PullError.importFailed
+            throw PullError.importFailed(String(describing: error))
         }
 
         let entry = makeHistory(request: request, succeeded: true)
@@ -432,10 +437,16 @@ nonisolated final class PullEngine {
         let verboseDump = tool == .mysqldump
             ? ["--verbose"]
             : []
+        // A source server often already has a wide table. Local MySQL, with
+        // strict mode on, rejects that CREATE TABLE (ERROR 1118). For a file
+        // import, turn strict mode off for this session only.
+        let relaxRowSize = inputPath == nil
+            ? []
+            : ["--init-command=SET SESSION innodb_strict_mode=OFF"]
         return ExternalCommand(
             tool: tool,
             executable: executable,
-            arguments: dumpCompression + verboseDump + extra + [
+            arguments: relaxRowSize + dumpCompression + verboseDump + extra + [
                 "-h", host,
                 "-P", String(port),
                 "-u", connection.user
@@ -471,7 +482,7 @@ nonisolated final class PullEngine {
             let entry = makeHistory(request: historyRequest, succeeded: false)
             rememberPull(entry)
             report(.failed)
-            throw PullError.importFailed
+            throw PullError.importFailed("")
         }
 
         let listing = (try? String(contentsOfFile: listingFile, encoding: .utf8)) ?? ""

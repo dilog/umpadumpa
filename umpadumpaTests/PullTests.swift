@@ -346,7 +346,7 @@ final class PullTests: XCTestCase {
         do {
             _ = try await engine.run(summary)
             XCTFail("expected import failure")
-        } catch PullError.importFailed {
+        } catch PullError.importFailed(_) {
             // expected
         } catch {
             XCTFail("wrong error \(error)")
@@ -382,6 +382,7 @@ final class PullTests: XCTestCase {
         XCTAssertFalse(dump.arguments.contains("src-secret"))
 
         let mysql = processes.invocations.last { $0.tool == .mysql && $0.inputPath != nil }!
+        XCTAssertTrue(mysql.arguments.contains("--init-command=SET SESSION innodb_strict_mode=OFF"))
         XCTAssertEqual(mysql.environment["MYSQL_PWD"], "dst-secret")
         XCTAssertEqual(mysql.arguments.last, "local_shop")
     }

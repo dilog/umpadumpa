@@ -1,7 +1,25 @@
 import Foundation
+import Darwin
 #if os(macOS)
 import Security
 #endif
+
+/// A broken pipe must not kill the app. mysql often exits first, and the next
+/// write would otherwise raise SIGPIPE and quit UmpaDumpa.
+func ignoreBrokenPipe() {
+    signal(SIGPIPE, SIG_IGN)
+}
+
+func isBrokenPipe(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    if nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(EPIPE) {
+        return true
+    }
+    if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+        return isBrokenPipe(underlying)
+    }
+    return false
+}
 
 nonisolated final class MemorySecretStore: SecretStoring {
     private var passwords: [UUID: String] = [:]
@@ -527,7 +545,7 @@ nonisolated final class FakeProcessRunner: ProcessRunning {
 
         if command.tool == .mysql {
             if failImport && command.inputPath != nil && command.inputPath == firstDumpOutputPath {
-                throw PullError.importFailed
+                throw PullError.importFailed("import failed")
             }
 
             if let eIndex = command.arguments.firstIndex(of: "-e"),
@@ -862,6 +880,7 @@ nonisolated final class RealProcessRunner: ProcessRunning {
             }
         }
 
+        ignoreBrokenPipe()
         try process.run()
         if let inputPath = command.inputPath {
             try writeInputFile(
@@ -872,6 +891,13 @@ nonisolated final class RealProcessRunner: ProcessRunning {
         }
         process.waitUntilExit()
         errorPipe.fileHandleForReading.readabilityHandler = nil
+        let unreadErrorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        if let unreadErrorText = String(data: unreadErrorData, encoding: .utf8), unreadErrorText.isEmpty == false {
+            lock.lock()
+            errorText += unreadErrorText
+            leftover += unreadErrorText
+            lock.unlock()
+        }
 
         lock.lock()
         let remaining = leftover
@@ -889,7 +915,7 @@ nonisolated final class RealProcessRunner: ProcessRunning {
             if command.tool == .mysqldump {
                 throw PullError.dumpFailed(detail)
             }
-            throw PullError.importFailed
+            throw PullError.importFailed(detail)
         }
     }
 
@@ -915,7 +941,15 @@ nonisolated final class RealProcessRunner: ProcessRunning {
             if chunk.isEmpty {
                 break
             }
-            try handle.write(contentsOf: chunk)
+            do {
+                try handle.write(contentsOf: chunk)
+            } catch {
+                if isBrokenPipe(error) {
+                    // mysql already quit. The caller reads stderr after waitUntilExit.
+                    return
+                }
+                throw error
+            }
             sent += chunk.count
             onInputBytes?(sent, total)
         }

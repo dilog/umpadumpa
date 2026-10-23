@@ -498,8 +498,9 @@ final class AppModel {
             } catch PullError.nameAlreadyExists {
                 pullError = "That name already exists. The destination was not changed."
                 refreshHistory()
-            } catch PullError.importFailed {
-                pullError = "Import failed."
+            } catch let PullError.importFailed(detail) {
+                let extra = detail.isEmpty ? "" : " \(detail)"
+                pullError = "Import failed.\(extra)"
                 refreshHistory()
             } catch {
                 pullError = "Pull failed."

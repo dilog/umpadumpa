@@ -1515,9 +1515,10 @@ struct ContentView: View {
                 model.pullPhase = .failed
                 model.pullError = "That name already exists. The destination was not changed."
                 model.refreshHistory()
-            } catch PullError.importFailed {
+            } catch let PullError.importFailed(detail) {
                 model.pullPhase = .failed
-                model.pullError = "Import failed."
+                let extra = detail.isEmpty ? "" : " \(detail)"
+                model.pullError = "Import failed.\(extra)"
                 model.refreshHistory()
             } catch {
                 model.pullPhase = .failed
