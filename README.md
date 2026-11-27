@@ -12,7 +12,7 @@
 
 UmpaDumpa is a free, open-source macOS GUI to clone, dump and restore remote MySQL and MariaDB databases locally. It is **not** a general-purpose SQL client — it is a specialized tool for the repetitive workflow of pulling a production database down to a development environment.
 
-<img src="docs/screenshots/01-connections.png" width="720" alt="UmpaDumpa showing the Connections sidebar and a database pull form">
+<div align="center"><img src="docs/screenshots/01-connections.png" width="720" alt="UmpaDumpa showing the Connections sidebar and a database pull form"></div>
 
 ## Features
 
