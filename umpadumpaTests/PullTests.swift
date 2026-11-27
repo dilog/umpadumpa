@@ -1933,3 +1933,26 @@ final class AppVersionTests: XCTestCase {
         XCTAssertEqual(AppVersion.buildNumber(from: [:]), "")
     }
 }
+
+final class DumpImportFilterTests: XCTestCase {
+    func testImportDropsBinaryLogAndGtidLines() {
+        let dump = """
+        -- MySQL dump
+        SET @MYSQLDUMP_TEMP_LOG_BIN = @@SESSION.SQL_LOG_BIN;
+        SET @@SESSION.SQL_LOG_BIN= 0;
+        SET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ '\(String(repeating: "a", count: 200))';
+        INSERT INTO users VALUES (1, 'keep me');
+        SET @@SESSION.SQL_LOG_BIN = @MYSQLDUMP_TEMP_LOG_BIN;
+        """
+
+        var filter = DumpImportFilter()
+        var cleaned = filter.filter(Data(dump.utf8))
+        cleaned.append(filter.finish())
+        let text = String(data: cleaned, encoding: .utf8) ?? ""
+
+        XCTAssertFalse(text.contains("SQL_LOG_BIN"))
+        XCTAssertFalse(text.contains("GTID_PURGED"))
+        XCTAssertTrue(text.contains("INSERT INTO users VALUES (1, 'keep me');"))
+        XCTAssertTrue(text.contains("-- MySQL dump"))
+    }
+}

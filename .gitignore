@@ -1,0 +1,39 @@
+# Xcode
+build/
+*.xcworkspace
+*.xcodeproj/*
+*.xcodeproj/*.xcworkspace
+!*.xcodeproj/project.xcworkspace/
+!*.xcodeproj/project.xcworkspace/xcshareddata/
+*.xcodeproj/xcshareddata/xcschemes/
+*.xcodeproj/filelists
+*.xcodeproj/groupfiles
+*.xcodeproj/project.pbxproj.dtorder
+
+# DerivedData
+DerivedData/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# IDE
+.idea/
+*.sublime-*
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+# Code Coverage
+build/coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# Swift Package Manager (if used)
+.packages
+*.xcodeproj/xcuserdata

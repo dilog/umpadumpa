@@ -936,22 +936,105 @@ nonisolated final class RealProcessRunner: ProcessRunning {
 
         let chunkSize = 256 * 1024
         var sent = 0
+        var filter = DumpImportFilter()
         while true {
             let chunk = try file.read(upToCount: chunkSize) ?? Data()
             if chunk.isEmpty {
                 break
             }
-            do {
-                try handle.write(contentsOf: chunk)
-            } catch {
-                if isBrokenPipe(error) {
-                    // mysql already quit. The caller reads stderr after waitUntilExit.
-                    return
+            let cleaned = filter.filter(chunk)
+            if cleaned.isEmpty == false {
+                do {
+                    try handle.write(contentsOf: cleaned)
+                } catch {
+                    if isBrokenPipe(error) {
+                        // mysql already quit. The caller reads stderr after waitUntilExit.
+                        return
+                    }
+                    throw error
                 }
-                throw error
             }
             sent += chunk.count
             onInputBytes?(sent, total)
         }
+        let tail = filter.finish()
+        if tail.isEmpty == false {
+            try handle.write(contentsOf: tail)
+        }
+    }
+}
+
+// mysqldump writes these near the top and the bottom of every file.
+// RDS rejects them because the master user does not have SUPER.
+// They only control the binary log and GTID history, which RDS manages itself.
+struct DumpImportFilter {
+    private var skippingRestOfLine = false
+    private var atLineStart = true
+    private var lineStart = Data()
+    private let prefixLimit = 80
+
+    mutating func filter(_ chunk: Data) -> Data {
+        var output = Data()
+        for byte in chunk {
+            if skippingRestOfLine {
+                if byte == 10 {
+                    skippingRestOfLine = false
+                    atLineStart = true
+                }
+                continue
+            }
+
+            if atLineStart {
+                lineStart.append(byte)
+                let lineHasEnded = byte == 10
+                if lineHasEnded || lineStart.count >= prefixLimit {
+                    if lineSetsRestrictedVariable(lineStart) {
+                        skippingRestOfLine = lineHasEnded == false
+                        lineStart.removeAll()
+                        atLineStart = lineHasEnded
+                    } else {
+                        output.append(lineStart)
+                        lineStart.removeAll()
+                        atLineStart = lineHasEnded
+                    }
+                }
+                continue
+            }
+
+            output.append(byte)
+            if byte == 10 {
+                atLineStart = true
+            }
+        }
+        return output
+    }
+
+    mutating func finish() -> Data {
+        if skippingRestOfLine {
+            return Data()
+        }
+        let tail = lineStart
+        lineStart.removeAll()
+        if lineSetsRestrictedVariable(tail) {
+            return Data()
+        }
+        return tail
+    }
+
+    private func lineSetsRestrictedVariable(_ prefix: Data) -> Bool {
+        guard let text = String(data: prefix, encoding: .utf8) else {
+            return false
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("SET ") == false {
+            return false
+        }
+        if trimmed.contains("SQL_LOG_BIN") {
+            return true
+        }
+        if trimmed.contains("GTID_PURGED") {
+            return true
+        }
+        return false
     }
 }
