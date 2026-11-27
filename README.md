@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/screenshots/00-logo.png" width="120" alt="UmpaDumpa">
+<img src="docs/screenshots/00-logo.png" width="240" alt="UmpaDumpa">
 
 # UmpaDumpa — MySQL & MariaDB Database Sync for macOS
 
