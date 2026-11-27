@@ -1,6 +1,6 @@
 # UmpaDumpa
 
-Pull a MySQL/MariaDB database from a remote server onto your Mac — with a GUI, no `mysqldump` archaeology.
+Pull a MySQL/MariaDB database from a remote server onto your Mac — with a GUI, in one click.
 
 <img src="docs/screenshots/00-logo.png" width="200" alt="UmpaDumpa">
 
@@ -8,7 +8,7 @@ Pull a MySQL/MariaDB database from a remote server onto your Mac — with a GUI,
 
 ## Why
 
-Every time you need real data locally for a bug or a feature, the ritual is the same: SSH in, `mysqldump`, download, import, fix the charset, drop the old DB, re-import. UmpaDumpa makes that a single click, and remembers how you did it.
+Every time you need a fresh copy of a remote database for local debugging — whether it is a one-off or something you repeat dozens of times a week — the ritual is always the same: SSH in, run `mysqldump`, download the file, import it locally, fix the charset, drop the old DB, re-import. With UmpaDumpa you save your server once as a connection, define the source and destination once as a recipe, and every time you need a fresh DB you just click once. It remembers everything you configured, so you never have to repeat the steps.
 
 ## What it does
 
