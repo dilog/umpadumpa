@@ -24,7 +24,9 @@ Every time you need real data locally for a bug or a feature, the ritual is the 
 
 ## Installation
 
-Download the latest `UmpaDumpa.zip` from the [Releases](https://github.com/dilog/umpadumpa/releases) page, unzip it, and drag `UmpaDumpa.app` into `/Applications`.
+Download [UmpaDumpa.zip (v1.1.0)](https://github.com/dilog/umpadumpa/releases/download/v1.1.0/UmpaDumpa.zip) for immediate install, or browse [older releases](https://github.com/dilog/umpadumpa/releases).
+
+Unzip and drag `UmpaDumpa.app` into `/Applications`.
 
 The build is signed with a Developer ID certificate and notarized by Apple, so it opens without Gatekeeper warnings.
 
