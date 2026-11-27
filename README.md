@@ -1,10 +1,13 @@
+<div align="center">
+
+<img src="docs/screenshots/00-logo.png" width="120" alt="UmpaDumpa">
+
 # UmpaDumpa
 
-Pull a MySQL/MariaDB database from a remote server onto your Mac — with a GUI, in one click.
+*Pull a MySQL/MariaDB database from a remote server onto your Mac — with a GUI, in one click.*
 
-<img src="docs/screenshots/00-logo.png" width="200" alt="UmpaDumpa">
+</div>
 
-![UmpaDumpa](docs/screenshots/01-connections.png)
 
 ## Why
 
