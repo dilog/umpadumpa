@@ -8,12 +8,13 @@
 
 </div>
 
-
 ## Why
 
 Every time you need a fresh copy of a remote database for local debugging — whether it is a one-off or something you repeat dozens of times a week — the ritual is always the same: SSH in, run `mysqldump`, download the file, import it locally, fix the charset, drop the old DB, re-import. With UmpaDumpa you save your server once as a connection, define the source and destination once as a recipe, and every time you need a fresh DB you just click once. It remembers everything you configured, so you never have to repeat the steps.
 
 ## What it does
+
+![UmpaDumpa](docs/screenshots/01-connections.png)
 
 - **Connections** — save your remote MySQL/MariaDB servers, with or without SSH tunneling. Credentials live in the macOS Keychain.
 - **Recipes** — a recipe is a source → destination mapping. Set it once, reuse it forever.
