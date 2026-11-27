@@ -59,7 +59,7 @@ Architecture decisions are documented in [`docs/adr/`](docs/adr/).
 This project was developed using agentic AI workflows — primarily [Cursor](https://cursor.com) with the Grok 4.7 model — under continuous human direction and architectural oversight.
 
 - **Code generation:** Core features, boilerplate, and build scripts were drafted by autonomous AI agents.
-- **Human review:** All code, security boundaries, and final releases were reviewed and verified by the maintainer.
+- **Human review:** The maintainer reviewed the output against the initial specifications and expected results to ensure alignment.
 
 ## License
 
