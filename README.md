@@ -1,56 +1,65 @@
 # UmpaDumpa
 
-Dump MySQL database from remote servers directly to your Mac — no command line, no manual mysqldump.
+Pull a MySQL/MariaDB database from a remote server onto your Mac — with a GUI, no `mysqldump` archaeology.
+
+![UmpaDumpa](umpadumpa/Resources/AppIcon.png)
+
+## Why
+
+Every time you need real data locally for a bug or a feature, the ritual is the same: SSH in, `mysqldump`, download, import, fix the charset, drop the old DB, re-import. UmpaDumpa makes that a single click, and remembers how you did it.
 
 ## What it does
 
-UmpaDumpa lets you:
-- **Save connections** to your remote MySQL/MariaDB servers (with or without SSH tunneling)
-- **Save pull recipes** that define source → destination database mappings
-- **Dump and import** with three strategies:
+- **Connections** — save your remote MySQL/MariaDB servers, with or without SSH tunneling. Credentials live in the macOS Keychain.
+- **Recipes** — a recipe is a source → destination mapping. Set it once, reuse it forever.
+- **Three import strategies**
   - **Replace** — drop the destination database and recreate it
-  - **Backup then replace** — create a backup first, then replace
-  - **Create new** — import into a new database alongside existing ones
-- **Table-level control** — select which tables to dump (useful for large databases)
-- **History** — track every pull operation with timestamps and outcomes
-- **Bookmarks** — save favorite databases and recipes for quick access
+  - **Backup then replace** — keep a backup, then replace
+  - **Create new** — import alongside existing databases, nothing destroyed
+- **Table-level control** — dump only the tables you need, for databases too big to copy whole
+- **History** — every pull, with timestamp, duration and outcome
+- **Bookmarks** — pin the databases and recipes you use daily
 
 ## Installation
 
-Download the latest release from the [Releases](https://github.com/YOUR_USERNAME/umpadumpa/releases) page.
+Download the latest `UmpaDumpa.zip` from the [Releases](https://github.com/dilog/umpadumpa/releases) page, unzip it, and drag `UmpaDumpa.app` into `/Applications`.
 
-The app is signed with Developer ID and notarized.
+The build is signed with a Developer ID certificate and notarized by Apple, so it opens without Gatekeeper warnings.
+
+You need a MySQL client on your Mac — `mysql` and `mysqldump` from Homebrew (`brew install mysql-client`) or the official MySQL package. If yours lives somewhere unusual, set the paths in **Settings**.
 
 ## Building from source
 
-Requires Xcode 15+ and macOS 14+.
+Requires Xcode 15+ on macOS 14+.
 
 ```bash
-# Open the project
+git clone https://github.com/dilog/umpadumpa.git
+cd umpadumpa
 open umpadumpa.xcodeproj
-
-# Build and run (⌘R)
 ```
 
-## MySQL client paths
+Then ⌘R. For a signed and notarized build, see `scripts/distribute-macos.sh`.
 
-UmpaDumpa looks for MySQL clients in these locations by default:
-- `/usr/local/bin/mysql` (Homebrew on Intel)
-- `/opt/homebrew/bin/mysql` (Homebrew on Apple Silicon)
-- `/usr/local/mysql/bin/mysql` (MySQL official package)
+## Default MySQL client paths
 
-Configure the path in Settings if your installation differs.
+- `/opt/homebrew/bin/mysql` — Homebrew on Apple Silicon
+- `/usr/local/bin/mysql` — Homebrew on Intel
+- `/usr/local/mysql/bin/mysql` — official MySQL package
 
 ## Privacy
 
 - Database credentials are stored in the macOS Keychain
-- No data leaves your machine
-- No telemetry or analytics
+- Nothing leaves your machine: no telemetry, no analytics, no accounts
+- The only network traffic is the database connection itself, plus SSH if you use tunneling
 
 ## License
 
-[Add your license here]
+MIT — see [LICENSE](LICENSE). Use it, fork it, sell it, ship it in your own product; just keep the copyright notice.
 
 ## Author
 
-Gabriele — Alfa Communication
+Gabriele Di Lorenzo — gabriele@alfacomm.it
+
+## Acknowledgements
+
+Built with SwiftUI and SwiftData. Architecture decisions are documented in [`docs/adr/`](docs/adr/).
