@@ -37,3 +37,6 @@ build/coverage/
 # Swift Package Manager (if used)
 .packages
 *.xcodeproj/xcuserdata
+
+# Scratch / agent working directory
+.scratch/
