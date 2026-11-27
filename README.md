@@ -2,7 +2,9 @@
 
 Pull a MySQL/MariaDB database from a remote server onto your Mac — with a GUI, no `mysqldump` archaeology.
 
-![UmpaDumpa](umpadumpa/Resources/AppIcon.png)
+![UmpaDumpa](docs/screenshots/00-logo.png){width=200}
+
+![UmpaDumpa](docs/screenshots/01-connections.png)
 
 ## Why
 
